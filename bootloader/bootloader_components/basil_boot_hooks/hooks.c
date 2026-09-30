@@ -2,9 +2,9 @@
 //
 // A double press of RST (two deliberate resets within DOUBLE_PRESS_WINDOW_MS)
 // erases otadata, so the stock selection falls back to the factory partition.
-// A single deliberate reset (RST/EN, power-on, USB reset from a host) just
-// restarts the current app after the window. Every other reset keeps the
-// current app with no delay: a guest's own esp_restart(), a deep-sleep wake, a
+// A single deliberate reset (RST/EN or power-on) just restarts the current app
+// after the window. Every other reset keeps the current app with no delay: a
+// USB reset from a host, a guest's own esp_restart(), a deep-sleep wake, a
 // watchdog or a panic. Works for any guest firmware without changes, including
 // Arduino apps that mark themselves valid on boot.
 
@@ -32,10 +32,9 @@ void bootloader_hooks_include(void) {}
 
 void bootloader_before_init(void) {}
 
-static bool isDeliberateReset(soc_reset_reason_t reason) {
-  return reason == RESET_REASON_CHIP_POWER_ON || reason == RESET_REASON_CORE_USB_UART ||
-         reason == RESET_REASON_CORE_USB_JTAG;
-}
+// RST/EN and power-on both report CHIP_POWER_ON. USB resets from a host (esptool,
+// a serial monitor reopening the port) do not count, so they cannot fake a press.
+static bool isDeliberateReset(soc_reset_reason_t reason) { return reason == RESET_REASON_CHIP_POWER_ON; }
 
 // Finds otadata; only reports it when a factory app exists to fall back to.
 static bool findOtadata(uint32_t* offset, uint32_t* size) {

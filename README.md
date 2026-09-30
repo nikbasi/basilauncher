@@ -16,8 +16,8 @@ works for any guest firmware without changes:
 | Reset | Boots |
 |-------|-------|
 | **RST pressed twice** within 0.8 s | Basilauncher (otadata erased) |
-| RST pressed once, power-on, USB reset from a host | The same app, after a 0.8 s wait |
-| App's own restart, deep-sleep wake, watchdog, crash | The same app, no wait |
+| RST pressed once, power-on | The same app, after a 0.8 s wait |
+| USB reset from a host, app's own restart, deep-sleep wake, watchdog, crash | The same app, no wait |
 
 **Double-press RST** from any app to get back here; a single stray press only
 restarts the app. The pending first press is a flag word in the sector at
