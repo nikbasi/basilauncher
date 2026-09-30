@@ -20,6 +20,7 @@ void canvasSetPixel(int x, int y, bool black);
 void canvasFillRect(int x, int y, int w, int h, bool black);
 void canvasDrawRect(int x, int y, int w, int h, bool black);
 void canvasDrawRoundRect(int x, int y, int w, int h, int r, bool black);
+void canvasFillRoundRect(int x, int y, int w, int h, int r, bool black);
 void canvasDrawLine(int x0, int y0, int x1, int y1, bool black);
 
 // 8x8 column-major glyphs (LSB=top), scaled. Default 3 → 24px on portrait.

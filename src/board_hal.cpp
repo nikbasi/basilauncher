@@ -2,18 +2,24 @@
 
 #include "canvas.h"
 
+#include <BatteryMonitor.h>
 #include <BoardT5S3.h>
 #include <InputManager.h>
+#include <Rtc.h>
 #include <SD.h>
 #include <SPI.h>
+#include <cstdio>
 #include <esp_ota_ops.h>
 
 namespace {
 
 InputManager gInput;
+BatteryMonitor gBattery;
+Rtc gRtc;
 bool gSdOk = false;
 bool gTouchOk = false;
 bool gWasDown = false;
+bool gRtcOk = false;
 
 }  // namespace
 
@@ -52,6 +58,18 @@ bool boardInitSd() {
   return true;
 }
 
+void boardInitPower() {
+  // BatteryMonitor reads BoardConfig gauge on construction; touch a read to log.
+  const auto st = gBattery.readStatus();
+  Serial.printf("Battery: supported=%d pct=%u charging=%d\n", st.supported ? 1 : 0,
+                st.percentageKnown ? st.percentage : 0u, st.charging ? 1 : 0);
+}
+
+void boardInitClock() {
+  gRtcOk = gRtc.begin();
+  Serial.printf("RTC: %s\n", gRtcOk ? "ok" : "absent/unset");
+}
+
 void boardMarkFactoryValid() {
   const esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
   if (err != ESP_OK) {
@@ -61,7 +79,32 @@ void boardMarkFactoryValid() {
 
 void boardPrepareDeepSleep() { (void)BoardT5S3::parkEpdPowerForSleep(); }
 
-int boardBatteryPercent() { return -1; }
+BoardPowerInfo boardPower() {
+  BoardPowerInfo info;
+  const auto st = gBattery.readStatus();
+  if (!st.supported || !st.percentageKnown) return info;
+  info.known = true;
+  info.percent = static_cast<int>(st.percentage);
+  info.charging = st.chargingKnown && st.charging;
+  return info;
+}
+
+BoardClockInfo boardClock() {
+  BoardClockInfo info;
+  if (!gRtcOk) return info;
+  Rtc::DateTime dt;
+  if (!gRtc.now(dt)) return info;
+  info.valid = true;
+  info.minute = dt.minute;
+  snprintf(info.time, sizeof(info.time), "%02u:%02u", dt.hour, dt.minute);
+  snprintf(info.date, sizeof(info.date), "%04u-%02u-%02u", dt.year, dt.month, dt.day);
+  return info;
+}
+
+int boardBatteryPercent() {
+  const BoardPowerInfo p = boardPower();
+  return p.known ? p.percent : -1;
+}
 
 bool boardSdOk() { return gSdOk; }
 bool boardTouchOk() { return gTouchOk; }
@@ -71,8 +114,6 @@ bool boardPollTouch(int& x, int& y) {
   gInput.update();
   float nx = 0, ny = 0;
   if (!gInput.wasTouchTap(nx, ny)) {
-    // Also accept a simple press-edge while held briefly, in case tap
-    // classification is picky during bring-up.
     if (gInput.isTouchPressed()) {
       gWasDown = true;
       return false;
@@ -81,7 +122,6 @@ bool boardPollTouch(int& x, int& y) {
       gWasDown = false;
       const auto pt = gInput.getTouchPoint();
       if (pt.valid) {
-        // getTouchPoint is panel pixels; normalize manually.
         nx = static_cast<float>(pt.x) / 959.0f;
         ny = static_cast<float>(pt.y) / 539.0f;
         canvasTouchToLogical(nx, ny, x, y);

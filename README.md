@@ -57,5 +57,11 @@ Tap a file → installs into the **smallest empty slot that fits**. If none fit,
 
 ## UI
 
-Portrait 540×960. Status: version + free space. Four guest cards with Boot / Clear.
-Dock: Apps / Settings.
+Portrait 540×960.
+
+- **Home** — status (clock, battery, version, free flash) + four guest slot cards.
+  Empty slots: **Assign** opens the file picker for that slot. Occupied: **Boot** / **Clear**.
+- **Install** (dock) — file picker with best-fit into any empty slot.
+- **Settings** — about, power off.
+
+Launcher partition stays protected; install never overwrites an occupied slot.

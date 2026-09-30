@@ -13,10 +13,13 @@
 namespace {
 
 Screen gScreen = Screen::Home;
-std::vector<FirmwareFile> gFiles;
+std::vector<FirmwareFile> gAllFiles;
+std::vector<FirmwareFile> gPickFiles;  // filtered for current picker
 SlotInfo gSlots[kSlotCount];
 FlashSpace gSpace;
-int gScroll = 0;
+int gPickScroll = 0;
+int gAssignSlot = -1;  // -1 = best-fit; 0..3 = specific empty slot
+uint8_t gLastClockMinute = 255;
 
 struct ProgressCtx {
   const char* title;
@@ -30,10 +33,45 @@ void refreshSlots() {
 
 void showHome() {
   gScreen = Screen::Home;
+  gAssignSlot = -1;
+  gPickScroll = 0;
   refreshSlots();
-  gFiles = appsScanFirmwareDir();
-  gScroll = std::min(gScroll, uiHomeMaxScroll(static_cast<int>(gFiles.size())));
-  uiDrawHome(gSlots, gSpace, gFiles, gScroll);
+  uiDrawHome(gSlots, gSpace);
+  const BoardClockInfo c = boardClock();
+  gLastClockMinute = c.valid ? c.minute : 255;
+}
+
+void buildPickerList(size_t maxBytes) {
+  gPickFiles.clear();
+  gPickFiles.reserve(gAllFiles.size());
+  for (const auto& f : gAllFiles) {
+    if (f.size <= maxBytes) gPickFiles.push_back(f);
+  }
+}
+
+size_t pickerMaxBytes() {
+  if (gAssignSlot >= 0 && gAssignSlot < kSlotCount) return gSlots[gAssignSlot].capacity;
+  // Best-fit: largest empty capacity (any file that fits somewhere)
+  size_t maxCap = 0;
+  for (int i = 0; i < kSlotCount; ++i) {
+    if (!gSlots[i].occupied && gSlots[i].capacity > maxCap) maxCap = gSlots[i].capacity;
+  }
+  return maxCap;
+}
+
+void showPicker(int targetSlot) {
+  gAssignSlot = targetSlot;
+  gScreen = Screen::Picker;
+  gAllFiles = appsScanFirmwareDir();
+  refreshSlots();
+  const size_t maxB = pickerMaxBytes();
+  buildPickerList(maxB);
+  gPickScroll = 0;
+  uiDrawPicker(gPickFiles, gPickScroll, gAssignSlot, maxB, gSpace);
+}
+
+void redrawPicker() {
+  uiDrawPicker(gPickFiles, gPickScroll, gAssignSlot, pickerMaxBytes(), gSpace);
 }
 
 void progressCb(size_t written, size_t total, void* ctx) {
@@ -45,37 +83,27 @@ void progressCb(size_t written, size_t total, void* ctx) {
   }
 }
 
-// Install only into an empty best-fit guest slot. Never touches factory / occupied.
-void installFileBestFit(int fileIndex) {
-  if (fileIndex < 0 || fileIndex >= static_cast<int>(gFiles.size())) return;
+void installFileToSlot(int fileIndex, int slotIndex) {
+  if (fileIndex < 0 || fileIndex >= static_cast<int>(gPickFiles.size())) return;
+  if (slotIndex < 0 || slotIndex >= kSlotCount) return;
 
-  const FirmwareFile& file = gFiles[fileIndex];
-  const int slotIndex = appsBestFitSlot(file.size);
-  if (slotIndex < 0) {
+  const FirmwareFile& file = gPickFiles[fileIndex];
+  if (gSlots[slotIndex].occupied) {
     gScreen = Screen::Message;
-    char body[128];
-    char need[24], freeB[24];
-    appsFormatBytes(file.size, need, sizeof(need));
-    appsFormatBytes(gSpace.guestFree, freeB, sizeof(freeB));
-    snprintf(body, sizeof(body), "No empty slot fits %s (free %s). Clear a slot first.", need,
-             freeB);
-    uiDrawMessage("Won't fit", body);
+    uiDrawMessage("Protected", "Clear the slot before assigning a new app.");
     return;
   }
-
-  // Refuse if somehow occupied (best-fit should only return empty).
-  if (appsSlotInfo(slotIndex).occupied) {
+  if (file.size > gSlots[slotIndex].capacity) {
     gScreen = Screen::Message;
-    uiDrawMessage("Protected", "That slot is occupied. Clear it first.");
+    uiDrawMessage("Too large", "That firmware does not fit this slot.");
     return;
   }
 
   gScreen = Screen::Progress;
-  ProgressCtx ctx{file.name.c_str(), -1};
   char title[64];
   snprintf(title, sizeof(title), "%s -> %c", file.name.c_str(), 'A' + slotIndex);
+  ProgressCtx ctx{title, -1};
   uiDrawProgress(title, 0);
-  ctx.title = title;
 
   const FlashResult res = flashValidateAndWrite(file.path.c_str(), slotIndex, progressCb, &ctx);
   if (res != FlashResult::Ok) {
@@ -92,12 +120,27 @@ void installFileBestFit(int fileIndex) {
   bootSlotPendingVerify(slotIndex);
 }
 
+void installPicked(int pickIndex) {
+  if (pickIndex < 0 || pickIndex >= static_cast<int>(gPickFiles.size())) return;
+  const FirmwareFile& file = gPickFiles[pickIndex];
+
+  int slot = gAssignSlot;
+  if (slot < 0) {
+    slot = appsBestFitSlot(file.size);
+    if (slot < 0) {
+      gScreen = Screen::Message;
+      uiDrawMessage("Won't fit", "No empty slot is large enough. Clear one first.");
+      return;
+    }
+  }
+  installFileToSlot(pickIndex, slot);
+}
+
 void bootExisting(int slotIndex) {
   if (slotIndex < 0 || slotIndex >= kSlotCount) return;
-  const SlotInfo info = appsSlotInfo(slotIndex);
-  if (!info.occupied) {
-    gScreen = Screen::Message;
-    uiDrawMessage("Empty", "Nothing to boot in this slot.");
+  refreshSlots();
+  if (!gSlots[slotIndex].occupied) {
+    showPicker(slotIndex);
     return;
   }
   gScreen = Screen::Progress;
@@ -114,12 +157,8 @@ void bootExisting(int slotIndex) {
 
 void clearSlot(int slotIndex) {
   if (slotIndex < 0 || slotIndex >= kSlotCount) return;
-  const SlotInfo info = appsSlotInfo(slotIndex);
-  if (!info.occupied) {
-    gScreen = Screen::Message;
-    uiDrawMessage("Empty", "Slot already empty.");
-    return;
-  }
+  refreshSlots();
+  if (!gSlots[slotIndex].occupied) return;
 
   gScreen = Screen::Progress;
   uiDrawProgress("Clearing...", 50);
@@ -135,11 +174,23 @@ void clearSlot(int slotIndex) {
   showHome();
 }
 
+int pickerVisibleRows() {
+  constexpr int kStatusH = 70;
+  constexpr int kDockH = 72;
+  constexpr int kPad = 18;
+  constexpr int kRowH = 56;
+  const int listTop = kStatusH + kPad + 56;
+  const int listBottom = kScreenH - kDockH - kPad;
+  return std::max(1, (listBottom - listTop) / kRowH);
+}
+
 void handleTouch(int x, int y) {
   if (gScreen == Screen::Message) {
     showHome();
     return;
   }
+
+  if (gScreen == Screen::Progress) return;
 
   if (gScreen == Screen::Settings) {
     const UiHit hit = uiHitSettings(x, y);
@@ -156,33 +207,63 @@ void handleTouch(int x, int y) {
     return;
   }
 
-  if (gScreen == Screen::Home) {
-    if (y < 56 && gScroll > 0) {
-      gScroll--;
-      uiDrawHome(gSlots, gSpace, gFiles, gScroll);
-      return;
+  if (gScreen == Screen::Picker) {
+    const UiHit hit = uiHitPicker(x, y, static_cast<int>(gPickFiles.size()), gPickScroll);
+    const int visible = pickerVisibleRows();
+    switch (hit.kind) {
+      case UiHit::Kind::Back:
+        showHome();
+        break;
+      case UiHit::Kind::ScrollUp:
+        if (gPickScroll > 0) {
+          gPickScroll--;
+          redrawPicker();
+        }
+        break;
+      case UiHit::Kind::ScrollDown:
+        if (gPickScroll + visible < static_cast<int>(gPickFiles.size())) {
+          gPickScroll++;
+          redrawPicker();
+        }
+        break;
+      case UiHit::Kind::PickFile:
+        installPicked(hit.index);
+        break;
+      default:
+        break;
     }
+    return;
+  }
 
-    const UiHit hit = uiHitHome(x, y, static_cast<int>(gFiles.size()), gScroll);
+  if (gScreen == Screen::Home) {
+    const UiHit hit = uiHitHome(x, y);
     switch (hit.kind) {
       case UiHit::Kind::Settings:
         gScreen = Screen::Settings;
+        refreshSlots();
         uiDrawSettings(gSpace);
         break;
+      case UiHit::Kind::OpenPicker:
+        showPicker(-1);
+        break;
       case UiHit::Kind::BootSlot:
-        bootExisting(hit.index);
+        refreshSlots();
+        if (hit.index >= 0 && hit.index < kSlotCount && !gSlots[hit.index].occupied) {
+          showPicker(hit.index);
+        } else {
+          bootExisting(hit.index);
+        }
         break;
       case UiHit::Kind::ClearSlot:
-        clearSlot(hit.index);
+        refreshSlots();
+        if (hit.index >= 0 && hit.index < kSlotCount && gSlots[hit.index].occupied) {
+          clearSlot(hit.index);
+        }
         break;
-      case UiHit::Kind::InstallFile:
-        installFileBestFit(hit.index);
+      case UiHit::Kind::AssignSlot:
+        showPicker(hit.index);
         break;
       default:
-        if (y > 780 && gScroll < uiHomeMaxScroll(static_cast<int>(gFiles.size()))) {
-          gScroll++;
-          uiDrawHome(gSlots, gSpace, gFiles, gScroll);
-        }
         break;
     }
   }
@@ -203,11 +284,13 @@ void setup() {
   }
   boardInitTouch();
   boardInitSd();
+  boardInitPower();
+  boardInitClock();
   appsLoadSlotLabels();
 
   canvasClear();
-  canvasDrawString(120, 420, "Basilauncher", true, 4);
-  canvasDrawString(200, 480, "v" BASILAUNCHER_VERSION, true, 3);
+  canvasDrawString(120, 400, "Basilauncher", true, 4);
+  canvasDrawString(200, 460, "v" BASILAUNCHER_VERSION, true, 3);
   canvasPresent(EInkDisplay::FULL_REFRESH);
   delay(400);
 
@@ -220,5 +303,15 @@ void loop() {
     Serial.printf("tap %d,%d screen=%d\n", x, y, static_cast<int>(gScreen));
     handleTouch(x, y);
   }
-  delay(10);
+
+  // Refresh home clock when the minute rolls (e-ink, once per minute).
+  if (gScreen == Screen::Home) {
+    const BoardClockInfo c = boardClock();
+    if (c.valid && c.minute != gLastClockMinute) {
+      gLastClockMinute = c.minute;
+      refreshSlots();
+      uiDrawHome(gSlots, gSpace);
+    }
+  }
+  delay(20);
 }

@@ -196,6 +196,27 @@ void canvasDrawRoundRect(int x, int y, int w, int h, int r, bool black) {
   }
 }
 
+void canvasFillRoundRect(int x, int y, int w, int h, int r, bool black) {
+  if (w <= 0 || h <= 0) return;
+  if (r <= 0 || r * 2 >= w || r * 2 >= h) {
+    canvasFillRect(x, y, w, h, black);
+    return;
+  }
+  canvasFillRect(x + r, y, w - 2 * r, h, black);
+  canvasFillRect(x, y + r, r, h - 2 * r, black);
+  canvasFillRect(x + w - r, y + r, r, h - 2 * r, black);
+  for (int dy = 0; dy < r; ++dy) {
+    for (int dx = 0; dx < r; ++dx) {
+      if (dx * dx + dy * dy <= r * r) {
+        canvasSetPixel(x + r - 1 - dx, y + r - 1 - dy, black);
+        canvasSetPixel(x + w - r + dx, y + r - 1 - dy, black);
+        canvasSetPixel(x + r - 1 - dx, y + h - r + dy, black);
+        canvasSetPixel(x + w - r + dx, y + h - r + dy, black);
+      }
+    }
+  }
+}
+
 void canvasDrawLine(int x0, int y0, int x1, int y1, bool black) {
   int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
   int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
