@@ -13,6 +13,7 @@ namespace {
 
 constexpr uint8_t kEspImageMagic = 0xE9;
 constexpr size_t kChunk = 4096;
+constexpr size_t kMergedAppOffset = 0x10000;
 
 esp_partition_subtype_t slotSubtype(int slotIndex) {
   switch (slotIndex) {
@@ -38,6 +39,54 @@ const esp_partition_t* slotPartition(int slotIndex) {
   if (p->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY) return nullptr;
   if (p->address < 0x190000) return nullptr;
   return p;
+}
+
+// True if the ESP image at file offset `base` contains flash-mapped IROM/DROM
+// segments (a real app). Bootloader stubs only have IRAM/DRAM and are not bootable
+// as an OTA payload — LilyGO "factory" dumps put those at 0x0 and the app at 0x10000.
+bool imageHasMappedFlashSeg(File& f, size_t base) {
+  uint8_t hdr[24];
+  if (!f.seek(base)) return false;
+  if (f.read(hdr, sizeof(hdr)) != static_cast<int>(sizeof(hdr))) return false;
+  if (hdr[0] != kEspImageMagic) return false;
+  const uint8_t nseg = hdr[1];
+  if (nseg == 0 || nseg > 16) return false;
+
+  size_t pos = base + sizeof(hdr);
+  for (uint8_t i = 0; i < nseg; ++i) {
+    uint8_t sh[8];
+    if (!f.seek(pos)) return false;
+    if (f.read(sh, sizeof(sh)) != static_cast<int>(sizeof(sh))) return false;
+    uint32_t addr = 0;
+    uint32_t len = 0;
+    memcpy(&addr, sh, 4);
+    memcpy(&len, sh + 4, 4);
+    if (len > 16u * 1024u * 1024u) return false;
+    const uint32_t top = addr & 0xFF000000u;
+    // ESP32-S3: DROM ~0x3Cxxxxxx, IROM ~0x42xxxxxx
+    if (top == 0x3C000000u || top == 0x42000000u) return true;
+    pos += sizeof(sh) + len;
+  }
+  return false;
+}
+
+// App-only image → offset 0. Merged bootloader+app dump → offset 0x10000.
+bool resolvePayload(File& f, size_t fileSize, size_t& payloadOff, size_t& payloadSize) {
+  payloadOff = 0;
+  payloadSize = fileSize;
+  if (fileSize < 0x100) return false;
+
+  if (imageHasMappedFlashSeg(f, 0)) {
+    payloadOff = 0;
+    payloadSize = fileSize;
+    return true;
+  }
+  if (fileSize > kMergedAppOffset && imageHasMappedFlashSeg(f, kMergedAppOffset)) {
+    payloadOff = kMergedAppOffset;
+    payloadSize = fileSize - kMergedAppOffset;
+    return true;
+  }
+  return false;
 }
 
 }  // namespace
@@ -95,31 +144,35 @@ FlashResult flashValidateAndWrite(const char* sdPath, int slotIndex, FlashProgre
   if (!f) return FlashResult::OpenFail;
 
   const size_t fileSize = f.size();
-  if (fileSize < 0x100) {
-    f.close();
-    return FlashResult::TooSmall;
-  }
-  if (fileSize > dest->size) {
-    f.close();
-    return FlashResult::TooLarge;
-  }
-
-  uint8_t fileMagic = 0;
-  if (f.read(&fileMagic, 1) != 1 || fileMagic != kEspImageMagic) {
+  size_t payloadOff = 0;
+  size_t payloadSize = 0;
+  if (!resolvePayload(f, fileSize, payloadOff, payloadSize)) {
     f.close();
     return FlashResult::BadMagic;
   }
-  f.seek(0);
+  if (payloadSize < 0x100) {
+    f.close();
+    return FlashResult::TooSmall;
+  }
+  if (payloadSize > dest->size) {
+    f.close();
+    return FlashResult::TooLarge;
+  }
 
   if (esp_partition_erase_range(dest, 0, dest->size) != ESP_OK) {
     f.close();
     return FlashResult::EraseFail;
   }
 
+  if (!f.seek(payloadOff)) {
+    f.close();
+    return FlashResult::ReadFail;
+  }
+
   size_t offset = 0;
   uint8_t buf[kChunk];
-  while (offset < fileSize) {
-    const size_t n = f.read(buf, std::min(kChunk, fileSize - offset));
+  while (offset < payloadSize) {
+    const size_t n = f.read(buf, std::min(kChunk, payloadSize - offset));
     if (n == 0) {
       f.close();
       return FlashResult::ReadFail;
@@ -129,10 +182,15 @@ FlashResult flashValidateAndWrite(const char* sdPath, int slotIndex, FlashProgre
       return FlashResult::WriteFail;
     }
     offset += n;
-    if (cb) cb(offset, fileSize, ctx);
+    if (cb) cb(offset, payloadSize, ctx);
     yield();
   }
   f.close();
+  if (payloadOff != 0) {
+    Serial.printf("Install: skipped 0x%X bootloader prefix (%u -> %u bytes)\n",
+                  static_cast<unsigned>(payloadOff), static_cast<unsigned>(fileSize),
+                  static_cast<unsigned>(payloadSize));
+  }
   return FlashResult::Ok;
 }
 

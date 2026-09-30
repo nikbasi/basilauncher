@@ -9,6 +9,13 @@
 // Guest app slots only (never factory / launcher).
 constexpr int kSlotCount = 4;
 
+struct DirEntry {
+  std::string name;  // basename for display
+  std::string path;  // absolute SD path
+  size_t size = 0;
+  bool isDir = false;
+};
+
 struct FirmwareFile {
   std::string name;
   std::string path;
@@ -44,6 +51,13 @@ int appsBestFitSlot(size_t bytes);
 // How many empty slots can hold `bytes`.
 int appsFittingEmptySlots(size_t bytes, int* outIndices, int maxOut);
 
-std::vector<FirmwareFile> appsScanFirmwareDir();
+// List directories + *.bin in `dirPath` (absolute, e.g. "/" or "/firmware").
+// Directories first (A-Z), then .bin files (A-Z). Skips "." / "..".
+std::vector<DirEntry> appsScanDir(const char* dirPath);
+// Parent of absolute path, or "/" for root. Never empty.
+void appsParentDir(const char* path, char* out, size_t outLen);
+bool appsIsRootDir(const char* path);
+
+std::vector<FirmwareFile> appsScanFirmwareDir();  // legacy: /firmware *.bin only
 
 void appsFormatBytes(size_t bytes, char* buf, size_t bufLen);

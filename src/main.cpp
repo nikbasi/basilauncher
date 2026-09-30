@@ -8,13 +8,17 @@
 #include "board_hal.h"
 #include "canvas.h"
 #include "flash_install.h"
+#include "sd_serial.h"
 #include "ui.h"
+
+#include <SD.h>
+#include <cstring>
 
 namespace {
 
 Screen gScreen = Screen::Home;
-std::vector<FirmwareFile> gAllFiles;
-std::vector<FirmwareFile> gPickFiles;  // filtered for current picker
+std::vector<DirEntry> gPickEntries;
+char gPickPath[192] = "/firmware";
 SlotInfo gSlots[kSlotCount];
 FlashSpace gSpace;
 int gPickScroll = 0;
@@ -41,17 +45,15 @@ void showHome() {
   gLastClockMinute = c.valid ? c.minute : 255;
 }
 
-void buildPickerList(size_t maxBytes) {
-  gPickFiles.clear();
-  gPickFiles.reserve(gAllFiles.size());
-  for (const auto& f : gAllFiles) {
-    if (f.size <= maxBytes) gPickFiles.push_back(f);
+void buildPickerList() {
+  if (!SD.exists(gPickPath) && strcmp(gPickPath, "/firmware") == 0) {
+    SD.mkdir("/firmware");
   }
+  gPickEntries = appsScanDir(gPickPath);
 }
 
 size_t pickerMaxBytes() {
   if (gAssignSlot >= 0 && gAssignSlot < kSlotCount) return gSlots[gAssignSlot].capacity;
-  // Best-fit: largest empty capacity (any file that fits somewhere)
   size_t maxCap = 0;
   for (int i = 0; i < kSlotCount; ++i) {
     if (!gSlots[i].occupied && gSlots[i].capacity > maxCap) maxCap = gSlots[i].capacity;
@@ -59,19 +61,37 @@ size_t pickerMaxBytes() {
   return maxCap;
 }
 
+void redrawPicker() {
+  uiDrawPicker(gPickEntries, gPickScroll, gAssignSlot, pickerMaxBytes(), gPickPath, gSpace);
+}
+
 void showPicker(int targetSlot) {
   gAssignSlot = targetSlot;
   gScreen = Screen::Picker;
-  gAllFiles = appsScanFirmwareDir();
+  // Prefer /firmware when present; otherwise start at SD root.
+  if (SD.exists("/firmware")) {
+    snprintf(gPickPath, sizeof(gPickPath), "/firmware");
+  } else {
+    snprintf(gPickPath, sizeof(gPickPath), "/");
+  }
   refreshSlots();
-  const size_t maxB = pickerMaxBytes();
-  buildPickerList(maxB);
+  buildPickerList();
   gPickScroll = 0;
-  uiDrawPicker(gPickFiles, gPickScroll, gAssignSlot, maxB, gSpace);
+  redrawPicker();
 }
 
-void redrawPicker() {
-  uiDrawPicker(gPickFiles, gPickScroll, gAssignSlot, pickerMaxBytes(), gSpace);
+void enterPickDir(const char* path) {
+  if (!path || !path[0]) return;
+  snprintf(gPickPath, sizeof(gPickPath), "%s", path);
+  buildPickerList();
+  gPickScroll = 0;
+  redrawPicker();
+}
+
+void goUpPickDir() {
+  char parent[192];
+  appsParentDir(gPickPath, parent, sizeof(parent));
+  enterPickDir(parent);
 }
 
 void progressCb(size_t written, size_t total, void* ctx) {
@@ -84,10 +104,11 @@ void progressCb(size_t written, size_t total, void* ctx) {
 }
 
 void installFileToSlot(int fileIndex, int slotIndex) {
-  if (fileIndex < 0 || fileIndex >= static_cast<int>(gPickFiles.size())) return;
+  if (fileIndex < 0 || fileIndex >= static_cast<int>(gPickEntries.size())) return;
   if (slotIndex < 0 || slotIndex >= kSlotCount) return;
 
-  const FirmwareFile& file = gPickFiles[fileIndex];
+  const DirEntry& file = gPickEntries[fileIndex];
+  if (file.isDir) return;
   if (gSlots[slotIndex].occupied) {
     gScreen = Screen::Message;
     uiDrawMessage("Protected", "Clear the slot before assigning a new app.");
@@ -121,8 +142,23 @@ void installFileToSlot(int fileIndex, int slotIndex) {
 }
 
 void installPicked(int pickIndex) {
-  if (pickIndex < 0 || pickIndex >= static_cast<int>(gPickFiles.size())) return;
-  const FirmwareFile& file = gPickFiles[pickIndex];
+  if (pickIndex < 0 || pickIndex >= static_cast<int>(gPickEntries.size())) return;
+  const DirEntry& file = gPickEntries[pickIndex];
+  if (file.isDir) {
+    enterPickDir(file.path.c_str());
+    return;
+  }
+
+  const size_t maxB = pickerMaxBytes();
+  if (file.size > maxB) {
+    gScreen = Screen::Message;
+    char body[96], need[24], cap[24];
+    appsFormatBytes(file.size, need, sizeof(need));
+    appsFormatBytes(maxB, cap, sizeof(cap));
+    snprintf(body, sizeof(body), "%s needs %s; max empty slot is %s.", file.name.c_str(), need, cap);
+    uiDrawMessage("Too large", body);
+    return;
+  }
 
   int slot = gAssignSlot;
   if (slot < 0) {
@@ -174,14 +210,65 @@ void clearSlot(int slotIndex) {
   showHome();
 }
 
-int pickerVisibleRows() {
-  constexpr int kStatusH = 70;
-  constexpr int kDockH = 72;
-  constexpr int kPad = 18;
-  constexpr int kRowH = 56;
-  const int listTop = kStatusH + kPad + 56;
-  const int listBottom = kScreenH - kDockH - kPad;
-  return std::max(1, (listBottom - listTop) / kRowH);
+int pickerVisibleRows() { return uiPickerVisibleRows(); }
+
+void showShade() {
+  gScreen = Screen::Shade;
+  refreshSlots();
+  uiDrawShade(gSpace);
+}
+
+void handleShadeHit(const UiHit& hit) {
+  switch (hit.kind) {
+    case UiHit::Kind::CloseShade:
+      showHome();
+      break;
+    case UiHit::Kind::BrightnessMinus:
+      boardSetBrightness(boardBrightness() - 5);
+      uiDrawShade(gSpace);
+      break;
+    case UiHit::Kind::BrightnessPlus:
+      boardSetBrightness(boardBrightness() + 5);
+      uiDrawShade(gSpace);
+      break;
+    case UiHit::Kind::BrightnessSlider:
+      if (hit.value >= 0) {
+        boardSetBrightness(hit.value);
+        uiDrawShade(gSpace);
+      }
+      break;
+    case UiHit::Kind::LightToggle:
+      boardSetFrontlightOn(!boardFrontlightOn());
+      uiDrawShade(gSpace);
+      break;
+    case UiHit::Kind::HourMinus:
+    case UiHit::Kind::HourPlus:
+    case UiHit::Kind::MinuteMinus:
+    case UiHit::Kind::MinutePlus: {
+      int delta = 0;
+      if (hit.kind == UiHit::Kind::HourMinus) delta = -60;
+      if (hit.kind == UiHit::Kind::HourPlus) delta = 60;
+      if (hit.kind == UiHit::Kind::MinuteMinus) delta = -1;
+      if (hit.kind == UiHit::Kind::MinutePlus) delta = 1;
+      if (!boardAdjustClockMinutes(delta)) {
+        // RTC never set / VL flag — seed a default then adjust.
+        BoardClockInfo c = boardClock();
+        uint16_t y = c.valid ? c.year : 2026;
+        uint8_t mo = c.valid ? c.month : 1;
+        uint8_t d = c.valid ? c.day : 1;
+        uint8_t h = c.valid ? c.hour : 12;
+        uint8_t mi = c.valid ? c.minute : 0;
+        int total = static_cast<int>(h) * 60 + static_cast<int>(mi) + delta;
+        while (total < 0) total += 24 * 60;
+        total %= 24 * 60;
+        boardSetClock(y, mo, d, static_cast<uint8_t>(total / 60), static_cast<uint8_t>(total % 60));
+      }
+      uiDrawShade(gSpace);
+      break;
+    }
+    default:
+      break;
+  }
 }
 
 void handleTouch(int x, int y) {
@@ -192,13 +279,18 @@ void handleTouch(int x, int y) {
 
   if (gScreen == Screen::Progress) return;
 
+  if (gScreen == Screen::Shade) {
+    handleShadeHit(uiHitShade(x, y));
+    return;
+  }
+
   if (gScreen == Screen::Settings) {
     const UiHit hit = uiHitSettings(x, y);
     if (hit.kind == UiHit::Kind::Back) {
       showHome();
     } else if (hit.kind == UiHit::Kind::PowerOff) {
       canvasClear();
-      canvasDrawString(160, 450, "Powered off", true, 3);
+      canvasDrawString(160, 450, "Powered off", true, 2);
       canvasPresent(EInkDisplay::FULL_REFRESH);
       delay(500);
       boardPrepareDeepSleep();
@@ -208,11 +300,16 @@ void handleTouch(int x, int y) {
   }
 
   if (gScreen == Screen::Picker) {
-    const UiHit hit = uiHitPicker(x, y, static_cast<int>(gPickFiles.size()), gPickScroll);
+    const bool canUp = !appsIsRootDir(gPickPath);
+    const UiHit hit =
+        uiHitPicker(x, y, static_cast<int>(gPickEntries.size()), gPickScroll, canUp);
     const int visible = pickerVisibleRows();
     switch (hit.kind) {
       case UiHit::Kind::Back:
         showHome();
+        break;
+      case UiHit::Kind::GoUp:
+        goUpPickDir();
         break;
       case UiHit::Kind::ScrollUp:
         if (gPickScroll > 0) {
@@ -221,7 +318,7 @@ void handleTouch(int x, int y) {
         }
         break;
       case UiHit::Kind::ScrollDown:
-        if (gPickScroll + visible < static_cast<int>(gPickFiles.size())) {
+        if (gPickScroll + visible < static_cast<int>(gPickEntries.size())) {
           gPickScroll++;
           redrawPicker();
         }
@@ -238,6 +335,9 @@ void handleTouch(int x, int y) {
   if (gScreen == Screen::Home) {
     const UiHit hit = uiHitHome(x, y);
     switch (hit.kind) {
+      case UiHit::Kind::OpenShade:
+        showShade();
+        break;
       case UiHit::Kind::Settings:
         gScreen = Screen::Settings;
         refreshSlots();
@@ -272,6 +372,8 @@ void handleTouch(int x, int y) {
 }  // namespace
 
 void setup() {
+  Serial.setRxBufferSize(16384);
+  Serial.setTxBufferSize(2048);
   Serial.begin(115200);
   delay(200);
   Serial.println("Basilauncher " BASILAUNCHER_VERSION);
@@ -286,11 +388,12 @@ void setup() {
   boardInitSd();
   boardInitPower();
   boardInitClock();
+  boardInitFrontlight();
   appsLoadSlotLabels();
 
   canvasClear();
-  canvasDrawString(120, 400, "Basilauncher", true, 4);
-  canvasDrawString(200, 460, "v" BASILAUNCHER_VERSION, true, 3);
+  canvasDrawString(120, 400, "Basilauncher", true, 3);
+  canvasDrawString(200, 470, "v" BASILAUNCHER_VERSION, true, 2);
   canvasPresent(EInkDisplay::FULL_REFRESH);
   delay(400);
 
@@ -298,13 +401,60 @@ void setup() {
 }
 
 void loop() {
+  // USB-CDC host can push .bin files onto the internal SD (/firmware/...).
+  if (gScreen != Screen::Progress) {
+    sdSerialPoll();
+  }
+
+  boardInputUpdate();
+
+  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  if (boardPollSwipe(x0, y0, x1, y1)) {
+    const int dy = y1 - y0;
+    const int dx = x1 - x0;
+    // Swipe down from top → open shade
+    if (gScreen == Screen::Home && y0 < 120 && dy > 80 && abs(dy) > abs(dx)) {
+      showShade();
+      return;
+    }
+    // Swipe up while shade open → close
+    if (gScreen == Screen::Shade && dy < -80 && abs(dy) > abs(dx)) {
+      showHome();
+      return;
+    }
+  }
+
+  // Live brightness drag while shade is open
+  if (gScreen == Screen::Shade) {
+    int hx = 0, hy = 0;
+    if (boardTouchHeld(hx, hy)) {
+      int bx, by, bw, bh;
+      uiShadeBrightnessTrack(bx, by, bw, bh);
+      if (hy >= by - 20 && hy <= by + bh + 20 && hx >= bx && hx <= bx + bw) {
+        static int lastBright = -1;
+        const int pct = uiBrightnessFromTouchX(hx);
+        if (pct != lastBright) {
+          lastBright = pct;
+          boardSetBrightness(pct);
+          // Avoid full e-ink redraw every pixel — only on release via tap path,
+          // but apply light live. Redraw shade occasionally.
+          static uint32_t lastDraw = 0;
+          const uint32_t now = millis();
+          if (now - lastDraw > 400) {
+            lastDraw = now;
+            uiDrawShade(gSpace);
+          }
+        }
+      }
+    }
+  }
+
   int x = 0, y = 0;
   if (boardPollTouch(x, y)) {
     Serial.printf("tap %d,%d screen=%d\n", x, y, static_cast<int>(gScreen));
     handleTouch(x, y);
   }
 
-  // Refresh home clock when the minute rolls (e-ink, once per minute).
   if (gScreen == Screen::Home) {
     const BoardClockInfo c = boardClock();
     if (c.valid && c.minute != gLastClockMinute) {

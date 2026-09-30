@@ -4,7 +4,9 @@
 #include <SD.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 
 namespace {
 
@@ -167,31 +169,116 @@ int appsFittingEmptySlots(size_t bytes, int* outIndices, int maxOut) {
 
 std::vector<FirmwareFile> appsScanFirmwareDir() {
   std::vector<FirmwareFile> out;
-  out.reserve(16);
-  if (!SD.exists("/firmware")) {
-    SD.mkdir("/firmware");
+  const auto entries = appsScanDir("/firmware");
+  out.reserve(entries.size());
+  for (const auto& e : entries) {
+    if (e.isDir) continue;
+    FirmwareFile f;
+    f.name = e.name;
+    f.path = e.path;
+    f.size = e.size;
+    out.push_back(std::move(f));
+  }
+  return out;
+}
+
+bool appsIsRootDir(const char* path) {
+  return path && (path[0] == '/' && path[1] == 0);
+}
+
+void appsParentDir(const char* path, char* out, size_t outLen) {
+  if (!out || outLen == 0) return;
+  if (!path || appsIsRootDir(path)) {
+    snprintf(out, outLen, "/");
+    return;
+  }
+  // Copy and strip trailing slash
+  char buf[192];
+  snprintf(buf, sizeof(buf), "%s", path);
+  size_t n = strlen(buf);
+  while (n > 1 && buf[n - 1] == '/') {
+    buf[--n] = 0;
+  }
+  char* slash = strrchr(buf, '/');
+  if (!slash || slash == buf) {
+    snprintf(out, outLen, "/");
+    return;
+  }
+  *slash = 0;
+  snprintf(out, outLen, "%s", buf[0] ? buf : "/");
+}
+
+std::vector<DirEntry> appsScanDir(const char* dirPath) {
+  std::vector<DirEntry> out;
+  out.reserve(32);
+  if (!dirPath || !dirPath[0]) dirPath = "/";
+
+  if (!SD.exists(dirPath)) {
+    if (strcmp(dirPath, "/firmware") == 0) SD.mkdir("/firmware");
+    else return out;
+  }
+
+  File root = SD.open(dirPath);
+  if (!root || !root.isDirectory()) {
+    if (root) root.close();
     return out;
   }
-  File root = SD.open("/firmware");
-  if (!root || !root.isDirectory()) return out;
 
+  const bool atRoot = appsIsRootDir(dirPath);
   File entry = root.openNextFile();
   while (entry) {
-    if (!entry.isDirectory()) {
-      String name = entry.name();
-      String lower = name;
-      lower.toLowerCase();
-      if (lower.endsWith(".bin")) {
-        FirmwareFile f;
-        f.name = name.c_str();
-        f.path = std::string("/firmware/") + name.c_str();
-        f.size = entry.size();
-        out.push_back(std::move(f));
-      }
+    String raw = entry.name();
+    // SdFat / SD may return "/firmware/foo.bin" or "foo.bin"
+    const char* rawC = raw.c_str();
+    const char* base = strrchr(rawC, '/');
+    base = base ? base + 1 : rawC;
+    if (base[0] == 0 || strcmp(base, ".") == 0 || strcmp(base, "..") == 0) {
+      entry.close();
+      entry = root.openNextFile();
+      continue;
     }
+    // macOS AppleDouble / Finder metadata (._*, .DS_Store)
+    if (base[0] == '.' && base[1] == '_') {
+      entry.close();
+      entry = root.openNextFile();
+      continue;
+    }
+    if (strcmp(base, ".DS_Store") == 0 || strcmp(base, ".Spotlight-V100") == 0 ||
+        strcmp(base, ".Trashes") == 0 || strcmp(base, ".fseventsd") == 0) {
+      entry.close();
+      entry = root.openNextFile();
+      continue;
+    }
+
+    DirEntry d;
+    d.name = base;
+    d.isDir = entry.isDirectory();
+    d.size = d.isDir ? 0 : entry.size();
+
+    if (atRoot) {
+      d.path = std::string("/") + base;
+    } else {
+      d.path = std::string(dirPath);
+      if (d.path.back() != '/') d.path.push_back('/');
+      d.path += base;
+    }
+
+    if (d.isDir) {
+      out.push_back(std::move(d));
+    } else {
+      String lower = d.name.c_str();
+      lower.toLowerCase();
+      if (lower.endsWith(".bin")) out.push_back(std::move(d));
+    }
+
     entry.close();
     entry = root.openNextFile();
   }
   root.close();
+
+  std::sort(out.begin(), out.end(), [](const DirEntry& a, const DirEntry& b) {
+    if (a.isDir != b.isDir) return a.isDir && !b.isDir;
+    return a.name < b.name;
+  });
   return out;
 }

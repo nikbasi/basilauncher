@@ -23,10 +23,10 @@ void canvasDrawRoundRect(int x, int y, int w, int h, int r, bool black);
 void canvasFillRoundRect(int x, int y, int w, int h, int r, bool black);
 void canvasDrawLine(int x0, int y0, int x1, int y1, bool black);
 
-// 8x8 column-major glyphs (LSB=top), scaled. Default 3 → 24px on portrait.
-void canvasDrawString(int x, int y, const char* text, bool black = true, int scale = 4);
-int canvasTextWidth(const char* text, int scale = 4);
-int canvasTextHeight(int scale = 4);
+// 8x16 ASC16 glyphs. scale=1 → 8×16px, scale=2 → 16×32px.
+void canvasDrawString(int x, int y, const char* text, bool black = true, int scale = 1);
+int canvasTextWidth(const char* text, int scale = 1);
+int canvasTextHeight(int scale = 1);
 
 // Panel-native normalized touch (0..1 landscape) → portrait logical pixels.
 void canvasTouchToLogical(float nx, float ny, int& x, int& y);
