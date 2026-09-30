@@ -37,6 +37,10 @@ void boardSetCleanEvery(int n);
 int boardSleepAfterMin();
 void boardSetSleepAfterMin(int minutes);
 
+// UI text size: 0=Small, 1=Medium, 2=Large. Persisted.
+int boardUiTextSize();
+void boardSetUiTextSize(int level);
+
 BoardPowerInfo boardPower();
 BoardClockInfo boardClock();
 bool boardAdjustClockMinutes(int deltaMinutes);

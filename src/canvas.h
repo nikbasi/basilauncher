@@ -28,10 +28,17 @@ void canvasDrawRoundRect(int x, int y, int w, int h, int r, bool black);
 void canvasFillRoundRect(int x, int y, int w, int h, int r, bool black);
 void canvasDrawLine(int x0, int y0, int x1, int y1, bool black);
 
-// 8x16 ASC16 glyphs. scale=1 → 8×16px, scale=2 → 16×32px.
+// 8x16 ASC16 glyphs, scaled. scale=1 uses the UI text-size setting (body).
+// scale=2 is the title size (also follows the setting).
 void canvasDrawString(int x, int y, const char* text, bool black = true, int scale = 1);
 int canvasTextWidth(const char* text, int scale = 1);
 int canvasTextHeight(int scale = 1);
+
+// UI text size: 0=Small, 1=Medium (default), 2=Large. Affects scale 1 and 2.
+void canvasSetUiTextSize(int level);
+int canvasUiTextSize();
+int canvasBodyCellW();  // pixel width of one body glyph at current size
+int canvasBodyCellH();
 
 // Panel-native normalized touch (0..1 landscape) → portrait logical pixels.
 void canvasTouchToLogical(float nx, float ny, int& x, int& y);

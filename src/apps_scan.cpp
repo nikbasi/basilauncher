@@ -174,6 +174,9 @@ std::vector<FirmwareFile> appsScanFirmwareDir() {
   out.reserve(entries.size());
   for (const auto& e : entries) {
     if (e.isDir) continue;
+    String lower = e.name.c_str();
+    lower.toLowerCase();
+    if (!lower.endsWith(".bin")) continue;
     FirmwareFile f;
     f.name = e.name;
     f.path = e.path;
@@ -264,13 +267,7 @@ std::vector<DirEntry> appsScanDir(const char* dirPath) {
       d.path += base;
     }
 
-    if (d.isDir) {
-      out.push_back(std::move(d));
-    } else {
-      String lower = d.name.c_str();
-      lower.toLowerCase();
-      if (lower.endsWith(".bin")) out.push_back(std::move(d));
-    }
+    out.push_back(std::move(d));
 
     entry.close();
     entry = root.openNextFile();

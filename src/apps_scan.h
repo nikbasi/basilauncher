@@ -51,8 +51,8 @@ int appsBestFitSlot(size_t bytes);
 // How many empty slots can hold `bytes`.
 int appsFittingEmptySlots(size_t bytes, int* outIndices, int maxOut);
 
-// List directories + *.bin in `dirPath` (absolute, e.g. "/" or "/firmware").
-// Directories first (A-Z), then .bin files (A-Z). Skips "." / "..".
+// List directories + files in `dirPath` (absolute, e.g. "/" or "/firmware").
+// Directories first (A-Z), then files (A-Z). Skips "." / ".." and junk.
 std::vector<DirEntry> appsScanDir(const char* dirPath);
 // Parent of absolute path, or "/" for root. Never empty.
 void appsParentDir(const char* path, char* out, size_t outLen);

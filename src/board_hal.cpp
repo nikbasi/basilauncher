@@ -109,21 +109,25 @@ void boardInitFrontlight() {
   gLightHw = ledcAttach(kFlGpio, kFlFreqHz, kFlResBits);
   int cleanEvery = 8;
   int sleepAfter = 10;
+  int uiText = 1;
   if (gPrefs.begin("basil", true)) {
     gBrightness = gPrefs.getUChar("bright", 40);
     gLightOn = gPrefs.getBool("lightOn", false);
     cleanEvery = static_cast<int>(gPrefs.getUChar("cleanEv", 8));
     sleepAfter = static_cast<int>(gPrefs.getUChar("sleepMin", 10));
+    uiText = static_cast<int>(gPrefs.getUChar("uiText", 1));
     gPrefs.end();
   }
   if (gBrightness > 100) gBrightness = 100;
   canvasSetCleanEvery(cleanEvery);
+  canvasSetUiTextSize(uiText);
   gSleepAfterMin = sleepAfter;
   if (gSleepAfterMin < 0) gSleepAfterMin = 0;
   if (gSleepAfterMin > 60) gSleepAfterMin = 60;
   applyFrontlight();
-  Serial.printf("Frontlight: hw=%d on=%d bright=%u cleanEvery=%d sleepAfter=%d\n", gLightHw ? 1 : 0,
-                gLightOn ? 1 : 0, gBrightness, canvasCleanEvery(), gSleepAfterMin);
+  Serial.printf("Frontlight: hw=%d on=%d bright=%u cleanEvery=%d sleepAfter=%d uiText=%d\n",
+                gLightHw ? 1 : 0, gLightOn ? 1 : 0, gBrightness, canvasCleanEvery(), gSleepAfterMin,
+                canvasUiTextSize());
 }
 
 int boardCleanEvery() { return canvasCleanEvery(); }
@@ -144,6 +148,16 @@ void boardSetSleepAfterMin(int minutes) {
   gSleepAfterMin = minutes;
   if (gPrefs.begin("basil", false)) {
     gPrefs.putUChar("sleepMin", static_cast<uint8_t>(gSleepAfterMin));
+    gPrefs.end();
+  }
+}
+
+int boardUiTextSize() { return canvasUiTextSize(); }
+
+void boardSetUiTextSize(int level) {
+  canvasSetUiTextSize(level);
+  if (gPrefs.begin("basil", false)) {
+    gPrefs.putUChar("uiText", static_cast<uint8_t>(canvasUiTextSize()));
     gPrefs.end();
   }
 }

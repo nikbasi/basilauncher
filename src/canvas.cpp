@@ -41,6 +41,7 @@ void canvasClear() { display.clearScreen(0xFF); }
 namespace {
 int gUntilCleanRefresh = 1;  // first paint scrub
 int gCleanEvery = 8;
+int gUiTextSize = 1;  // 0=Small 10×20, 1=Medium 12×24, 2=Large 14×28
 }  // namespace
 
 void canvasRequestCleanRefresh() { gUntilCleanRefresh = 1; }
@@ -52,6 +53,58 @@ void canvasSetCleanEvery(int n) {
 }
 
 int canvasCleanEvery() { return gCleanEvery; }
+
+void canvasSetUiTextSize(int level) {
+  if (level < 0) level = 0;
+  if (level > 2) level = 2;
+  gUiTextSize = level;
+}
+
+int canvasUiTextSize() { return gUiTextSize; }
+
+int canvasBodyCellW() {
+  switch (gUiTextSize) {
+    case 0:
+      return 10;
+    case 2:
+      return 14;
+    default:
+      return 12;
+  }
+}
+
+int canvasBodyCellH() {
+  switch (gUiTextSize) {
+    case 0:
+      return 20;
+    case 2:
+      return 28;
+    default:
+      return 24;
+  }
+}
+
+int canvasTitleCellW() {
+  switch (gUiTextSize) {
+    case 0:
+      return 16;
+    case 2:
+      return 20;
+    default:
+      return 18;
+  }
+}
+
+int canvasTitleCellH() {
+  switch (gUiTextSize) {
+    case 0:
+      return 32;
+    case 2:
+      return 40;
+    default:
+      return 36;
+  }
+}
 
 void canvasPresent(EInkDisplay::RefreshMode mode) { display.displayBuffer(mode, false); }
 
@@ -170,7 +223,8 @@ void canvasDrawLine(int x0, int y0, int x1, int y1, bool black) {
 }
 
 int canvasTextHeight(int scale) {
-  if (scale <= 1) return 20;  // body: slightly larger than native 8×16
+  if (scale <= 1) return canvasBodyCellH();
+  if (scale == 2) return canvasTitleCellH();
   return kFont8x16H * scale;
 }
 
@@ -178,21 +232,31 @@ int canvasTextWidth(const char* text, int scale) {
   if (!text || scale < 1) return 0;
   int n = 0;
   for (const char* p = text; *p && *p != '\n'; ++p) ++n;
-  if (scale <= 1) return n * 10;
+  if (scale <= 1) return n * canvasBodyCellW();
+  if (scale == 2) return n * canvasTitleCellW();
   return n * kFont8x16W * scale;
 }
 
 void canvasDrawString(int x, int y, const char* text, bool black, int scale) {
   if (!text) return;
   if (scale < 1) scale = 1;
-  // scale 1 → 10×20 (a notch above native 8×16). scale 2+ → integer enlarge.
-  const int cellW = (scale <= 1) ? 10 : (kFont8x16W * scale);
-  const int cellH = (scale <= 1) ? 20 : (kFont8x16H * scale);
+  int cellW = kFont8x16W * scale;
+  int cellH = kFont8x16H * scale;
+  int rowGap = scale;
+  if (scale <= 1) {
+    cellW = canvasBodyCellW();
+    cellH = canvasBodyCellH();
+    rowGap = 2;
+  } else if (scale == 2) {
+    cellW = canvasTitleCellW();
+    cellH = canvasTitleCellH();
+    rowGap = 2;
+  }
   int cx = x;
   for (const char* p = text; *p; ++p) {
     if (*p == '\n') {
       cx = x;
-      y += cellH + (scale <= 1 ? 2 : scale);
+      y += cellH + rowGap;
       continue;
     }
     char ch = *p;

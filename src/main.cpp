@@ -2,32 +2,58 @@
 #include <esp_sleep.h>
 #include <esp_system.h>
 #include <algorithm>
+#include <cstring>
 #include <vector>
 
 #include "apps_scan.h"
 #include "board_hal.h"
+#include "bmp_draw.h"
 #include "canvas.h"
+#include "file_ops.h"
 #include "flash_install.h"
 #include "sd_serial.h"
 #include "sleep_screen.h"
 #include "ui.h"
 
 #include <SD.h>
-#include <cstring>
 
 namespace {
 
 Screen gScreen = Screen::Home;
-std::vector<DirEntry> gPickEntries;
-char gPickPath[192] = "/firmware";
+std::vector<DirEntry> gEntries;
+char gPath[kFilePathMax] = "/";
+char gBrowsePath[kFilePathMax] = "/";
 SlotInfo gSlots[kSlotCount];
 FlashSpace gSpace;
-int gPickScroll = 0;
-int gAssignSlot = -1;  // -1 = best-fit; 0..3 = specific empty slot
+int gScroll = 0;
+int gSelected = -1;
+int gAssignSlot = -1;
+ExplorerMode gExplorerMode = ExplorerMode::Browse;
+bool gSheetOpen = false;
 uint8_t gLastClockMinute = 255;
 uint32_t gLastActiveMs = 0;
 
+char gTextBuf[kTextEditMax];
+size_t gTextLen = 0;
+char gTextPath[kFilePathMax] = {};
+char gTextTitle[48] = {};
+TextEditMode gTextMode = TextEditMode::EditFile;
+bool gOskShift = false;
+bool gOskSymbols = false;
+
+enum class ConfirmAction { None, Delete };
+ConfirmAction gConfirmAction = ConfirmAction::None;
+char gConfirmPath[kFilePathMax] = {};
+
+bool gMessageReturnExplorer = false;
+
 void noteActivity() { gLastActiveMs = millis(); }
+
+void showMessage(const char* title, const char* body, bool returnExplorer) {
+  gMessageReturnExplorer = returnExplorer;
+  gScreen = Screen::Message;
+  uiDrawMessage(title, body);
+}
 
 struct ProgressCtx {
   const char* title;
@@ -42,21 +68,16 @@ void refreshSlots() {
 void showHome() {
   gScreen = Screen::Home;
   gAssignSlot = -1;
-  gPickScroll = 0;
+  gScroll = 0;
+  gSelected = -1;
+  gSheetOpen = false;
   refreshSlots();
   uiDrawHome(gSlots, gSpace);
   const BoardClockInfo c = boardClock();
   gLastClockMinute = c.valid ? c.minute : 255;
 }
 
-void buildPickerList() {
-  if (!SD.exists(gPickPath) && strcmp(gPickPath, "/firmware") == 0) {
-    SD.mkdir("/firmware");
-  }
-  gPickEntries = appsScanDir(gPickPath);
-}
-
-size_t pickerMaxBytes() {
+size_t installMaxBytes() {
   if (gAssignSlot >= 0 && gAssignSlot < kSlotCount) return gSlots[gAssignSlot].capacity;
   size_t maxCap = 0;
   for (int i = 0; i < kSlotCount; ++i) {
@@ -65,37 +86,67 @@ size_t pickerMaxBytes() {
   return maxCap;
 }
 
-void redrawPicker() {
-  uiDrawPicker(gPickEntries, gPickScroll, gAssignSlot, pickerMaxBytes(), gPickPath, gSpace);
+void buildExplorerList() {
+  if (!SD.exists(gPath) && strcmp(gPath, "/firmware") == 0) SD.mkdir("/firmware");
+  gEntries = appsScanDir(gPath);
+  if (gSelected >= static_cast<int>(gEntries.size())) gSelected = -1;
 }
 
-void showPicker(int targetSlot) {
+void redrawExplorer() {
+  ExplorerDrawState st;
+  st.mode = gExplorerMode;
+  st.targetSlot = gAssignSlot;
+  st.maxBytes = installMaxBytes();
+  st.scroll = gScroll;
+  st.selected = gSelected;
+  st.sheetOpen = gSheetOpen;
+  st.clipboardHas = fileClipboard().hasItem;
+  st.clipboardCut = fileClipboard().isCut;
+  st.currentPath = gPath;
+  gScreen = Screen::Explorer;
+  uiDrawExplorer(gEntries, st, gSpace);
+}
+
+void showExplorer(ExplorerMode mode, int targetSlot) {
+  gExplorerMode = mode;
   gAssignSlot = targetSlot;
-  gScreen = Screen::Picker;
-  // Prefer /firmware when present; otherwise start at SD root.
-  if (SD.exists("/firmware")) {
-    snprintf(gPickPath, sizeof(gPickPath), "/firmware");
-  } else {
-    snprintf(gPickPath, sizeof(gPickPath), "/");
-  }
+  gScroll = 0;
+  gSelected = -1;
+  gSheetOpen = false;
   refreshSlots();
-  buildPickerList();
-  gPickScroll = 0;
-  redrawPicker();
+
+  if (mode == ExplorerMode::Install) {
+    if (SD.exists("/firmware")) snprintf(gPath, sizeof(gPath), "/firmware");
+    else snprintf(gPath, sizeof(gPath), "/");
+  } else {
+    snprintf(gPath, sizeof(gPath), "%s", gBrowsePath[0] ? gBrowsePath : "/");
+    if (!SD.exists(gPath)) snprintf(gPath, sizeof(gPath), "/");
+  }
+
+  buildExplorerList();
+  redrawExplorer();
 }
 
-void enterPickDir(const char* path) {
+void rememberBrowsePath() {
+  if (gExplorerMode == ExplorerMode::Browse) {
+    snprintf(gBrowsePath, sizeof(gBrowsePath), "%s", gPath);
+  }
+}
+
+void enterDir(const char* path) {
   if (!path || !path[0]) return;
-  snprintf(gPickPath, sizeof(gPickPath), "%s", path);
-  buildPickerList();
-  gPickScroll = 0;
-  redrawPicker();
+  snprintf(gPath, sizeof(gPath), "%s", path);
+  rememberBrowsePath();
+  buildExplorerList();
+  gScroll = 0;
+  gSelected = -1;
+  redrawExplorer();
 }
 
-void goUpPickDir() {
-  char parent[192];
-  appsParentDir(gPickPath, parent, sizeof(parent));
-  enterPickDir(parent);
+void goUpDir() {
+  char parent[kFilePathMax];
+  appsParentDir(gPath, parent, sizeof(parent));
+  enterDir(parent);
 }
 
 void progressCb(size_t written, size_t total, void* ctx) {
@@ -108,19 +159,17 @@ void progressCb(size_t written, size_t total, void* ctx) {
 }
 
 void installFileToSlot(int fileIndex, int slotIndex) {
-  if (fileIndex < 0 || fileIndex >= static_cast<int>(gPickEntries.size())) return;
+  if (fileIndex < 0 || fileIndex >= static_cast<int>(gEntries.size())) return;
   if (slotIndex < 0 || slotIndex >= kSlotCount) return;
 
-  const DirEntry& file = gPickEntries[fileIndex];
-  if (file.isDir) return;
+  const DirEntry& file = gEntries[fileIndex];
+  if (file.isDir || !fileOpsIsBin(file.name.c_str())) return;
   if (gSlots[slotIndex].occupied) {
-    gScreen = Screen::Message;
-    uiDrawMessage("Protected", "Clear the slot before assigning a new app.");
+    showMessage("Protected", "Clear the slot before assigning a new app.", true);
     return;
   }
   if (file.size > gSlots[slotIndex].capacity) {
-    gScreen = Screen::Message;
-    uiDrawMessage("Too large", "That firmware does not fit this slot.");
+    showMessage("Too large", "That firmware does not fit this slot.", true);
     return;
   }
 
@@ -132,10 +181,9 @@ void installFileToSlot(int fileIndex, int slotIndex) {
 
   const FlashResult res = flashValidateAndWrite(file.path.c_str(), slotIndex, progressCb, &ctx);
   if (res != FlashResult::Ok) {
-    gScreen = Screen::Message;
     char body[96];
     snprintf(body, sizeof(body), "Install failed: %s", flashResultName(res));
-    uiDrawMessage("Error", body);
+    showMessage("Error", body, true);
     return;
   }
 
@@ -143,22 +191,18 @@ void installFileToSlot(int fileIndex, int slotIndex) {
   showHome();
 }
 
-void installPicked(int pickIndex) {
-  if (pickIndex < 0 || pickIndex >= static_cast<int>(gPickEntries.size())) return;
-  const DirEntry& file = gPickEntries[pickIndex];
-  if (file.isDir) {
-    enterPickDir(file.path.c_str());
-    return;
-  }
+void installSelectedBin() {
+  if (gSelected < 0 || gSelected >= static_cast<int>(gEntries.size())) return;
+  const DirEntry& file = gEntries[gSelected];
+  if (file.isDir || !fileOpsIsBin(file.name.c_str())) return;
 
-  const size_t maxB = pickerMaxBytes();
+  const size_t maxB = installMaxBytes();
   if (file.size > maxB) {
-    gScreen = Screen::Message;
     char body[96], need[24], cap[24];
     appsFormatBytes(file.size, need, sizeof(need));
     appsFormatBytes(maxB, cap, sizeof(cap));
     snprintf(body, sizeof(body), "%s needs %s; max empty slot is %s.", file.name.c_str(), need, cap);
-    uiDrawMessage("Too large", body);
+    showMessage("Too large", body, true);
     return;
   }
 
@@ -166,19 +210,247 @@ void installPicked(int pickIndex) {
   if (slot < 0) {
     slot = appsBestFitSlot(file.size);
     if (slot < 0) {
-      gScreen = Screen::Message;
-      uiDrawMessage("Won't fit", "No empty slot is large enough. Clear one first.");
+      showMessage("Won't fit", "No empty slot is large enough. Clear one first.", true);
       return;
     }
   }
-  installFileToSlot(pickIndex, slot);
+  installFileToSlot(gSelected, slot);
+}
+
+void openImage(const char* path) {
+  gScreen = Screen::ImageView;
+  if (!bmpDrawFile(path)) {
+    showMessage("Image", "Could not open BMP (need 24-bit).", true);
+    return;
+  }
+  uiDrawImageViewHint();
+}
+
+void redrawTextEdit() {
+  gScreen = Screen::TextEdit;
+  uiDrawTextEdit(gTextTitle, gTextBuf, gOskSymbols, gOskShift, gTextMode);
+}
+
+void openTextEditor(TextEditMode mode, const char* title, const char* initial, const char* path) {
+  gTextMode = mode;
+  gOskShift = false;
+  gOskSymbols = false;
+  gTextLen = 0;
+  gTextBuf[0] = 0;
+  gTextPath[0] = 0;
+  snprintf(gTextTitle, sizeof(gTextTitle), "%s", title ? title : "Edit");
+  if (path) snprintf(gTextPath, sizeof(gTextPath), "%s", path);
+  if (initial) {
+    snprintf(gTextBuf, sizeof(gTextBuf), "%s", initial);
+    gTextLen = strlen(gTextBuf);
+  }
+  redrawTextEdit();
+}
+
+void openTextFile(const char* path, const char* name) {
+  size_t n = 0;
+  if (!fileOpsLoadText(path, gTextBuf, sizeof(gTextBuf), &n)) {
+    showMessage("Too large", "Text files over ~6 KB cannot be edited here.", true);
+    return;
+  }
+  gTextLen = n;
+  gTextMode = TextEditMode::EditFile;
+  gOskShift = false;
+  gOskSymbols = false;
+  snprintf(gTextPath, sizeof(gTextPath), "%s", path ? path : "");
+  snprintf(gTextTitle, sizeof(gTextTitle), "%s", name ? name : "Edit");
+  redrawTextEdit();
+}
+
+void textAppend(char ch) {
+  if (gTextLen + 1 >= sizeof(gTextBuf)) return;
+  gTextBuf[gTextLen++] = ch;
+  gTextBuf[gTextLen] = 0;
+}
+
+void textBackspace() {
+  if (gTextLen == 0) return;
+  gTextBuf[--gTextLen] = 0;
+}
+
+bool nameLooksSafe(const char* name) {
+  if (!name || !name[0]) return false;
+  if (strchr(name, '/') || strchr(name, '\\')) return false;
+  if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) return false;
+  return true;
+}
+
+void finishTextEdit(bool save) {
+  if (!save) {
+    redrawExplorer();
+    return;
+  }
+
+  if (gTextMode == TextEditMode::EditFile) {
+    if (!fileOpsSaveText(gTextPath, gTextBuf, gTextLen)) {
+      showMessage("Save failed", "Could not write the file.", true);
+      return;
+    }
+    buildExplorerList();
+    redrawExplorer();
+    return;
+  }
+
+  if (!nameLooksSafe(gTextBuf)) {
+    showMessage("Bad name", "Name cannot be empty or contain /.", true);
+    return;
+  }
+
+  char dest[kFilePathMax];
+  if (!fileOpsJoin(gPath, gTextBuf, dest, sizeof(dest))) {
+    showMessage("Error", "Path too long.", true);
+    return;
+  }
+
+  if (gTextMode == TextEditMode::NewFolder) {
+    if (fileOpsExists(dest)) {
+      showMessage("Exists", "That name is already used.", true);
+      return;
+    }
+    if (!fileOpsMkdir(dest)) {
+      showMessage("Error", "Could not create folder.", true);
+      return;
+    }
+    buildExplorerList();
+    redrawExplorer();
+    return;
+  }
+
+  if (gTextMode == TextEditMode::NewFile) {
+    if (fileOpsExists(dest)) {
+      showMessage("Exists", "That name is already used.", true);
+      return;
+    }
+    if (!fileOpsSaveText(dest, "", 0)) {
+      showMessage("Error", "Could not create file.", true);
+      return;
+    }
+    // Open the new file for editing.
+    snprintf(gTextPath, sizeof(gTextPath), "%s", dest);
+    gTextMode = TextEditMode::EditFile;
+    gTextLen = 0;
+    gTextBuf[0] = 0;
+    gOskShift = false;
+    gOskSymbols = false;
+    char base[96];
+    if (!fileOpsBasename(dest, base, sizeof(base))) snprintf(base, sizeof(base), "Edit");
+    snprintf(gTextTitle, sizeof(gTextTitle), "%s", base);
+    redrawTextEdit();
+    return;
+  }
+
+  // Rename
+  if (!gTextPath[0] || !fileOpsExists(gTextPath)) {
+    showMessage("Error", "Source missing.", true);
+    return;
+  }
+  if (strcmp(gTextPath, dest) == 0) {
+    redrawExplorer();
+    return;
+  }
+  if (fileOpsExists(dest)) {
+    showMessage("Exists", "That name is already used.", true);
+    return;
+  }
+  if (!fileOpsRename(gTextPath, dest)) {
+    showMessage("Error", "Rename failed.", true);
+    return;
+  }
+  buildExplorerList();
+  gSelected = -1;
+  redrawExplorer();
+}
+
+void openSelected() {
+  if (gSelected < 0 || gSelected >= static_cast<int>(gEntries.size())) return;
+  const DirEntry& e = gEntries[gSelected];
+  if (e.isDir) {
+    enterDir(e.path.c_str());
+    return;
+  }
+  if (gExplorerMode == ExplorerMode::Install && fileOpsIsBin(e.name.c_str())) {
+    installSelectedBin();
+    return;
+  }
+  if (fileOpsIsBmp(e.name.c_str())) {
+    openImage(e.path.c_str());
+    return;
+  }
+  if (fileOpsIsText(e.name.c_str())) {
+    openTextFile(e.path.c_str(), e.name.c_str());
+    return;
+  }
+  if (fileOpsIsBin(e.name.c_str())) {
+    showMessage("Firmware", "Open an empty slot to install .bin files.", true);
+    return;
+  }
+  showMessage("Unsupported", "Cannot open this file type.", true);
+}
+
+void clipboardFromSelection(bool cut) {
+  if (gSelected < 0 || gSelected >= static_cast<int>(gEntries.size())) {
+    showMessage("Select first", "Tap a file or folder, then Copy or Cut.", true);
+    return;
+  }
+  fileClipboardSet(gEntries[gSelected].path.c_str(), cut);
+  redrawExplorer();
+}
+
+void doPaste() {
+  char err[48];
+  if (!fileClipboardPaste(gPath, err, sizeof(err))) {
+    showMessage("Paste", err, true);
+    return;
+  }
+  buildExplorerList();
+  redrawExplorer();
+}
+
+void askDelete() {
+  if (gSelected < 0 || gSelected >= static_cast<int>(gEntries.size())) {
+    showMessage("Select first", "Tap a file or folder, then Delete.", true);
+    return;
+  }
+  const DirEntry& e = gEntries[gSelected];
+  if (e.isDir && !fileOpsDirEmpty(e.path.c_str())) {
+    showMessage("Not empty", "Only empty folders can be deleted.", true);
+    return;
+  }
+  gConfirmAction = ConfirmAction::Delete;
+  snprintf(gConfirmPath, sizeof(gConfirmPath), "%s", e.path.c_str());
+  gScreen = Screen::Confirm;
+  char body[96];
+  snprintf(body, sizeof(body), "Delete %s?", e.name.c_str());
+  uiDrawConfirm("Delete", body);
+}
+
+void confirmYes() {
+  if (gConfirmAction == ConfirmAction::Delete) {
+    if (!fileOpsRemove(gConfirmPath)) {
+      showMessage("Error", "Delete failed.", true);
+      gConfirmAction = ConfirmAction::None;
+      return;
+    }
+    if (fileClipboard().hasItem && strcmp(fileClipboard().path, gConfirmPath) == 0) {
+      fileClipboardClear();
+    }
+    gSelected = -1;
+    buildExplorerList();
+  }
+  gConfirmAction = ConfirmAction::None;
+  redrawExplorer();
 }
 
 void bootExisting(int slotIndex) {
   if (slotIndex < 0 || slotIndex >= kSlotCount) return;
   refreshSlots();
   if (!gSlots[slotIndex].occupied) {
-    showPicker(slotIndex);
+    showExplorer(ExplorerMode::Install, slotIndex);
     return;
   }
   gScreen = Screen::Progress;
@@ -186,10 +458,9 @@ void bootExisting(int slotIndex) {
   delay(200);
   const FlashResult res = bootSlotPendingVerify(slotIndex);
   if (res != FlashResult::Ok) {
-    gScreen = Screen::Message;
     char body[96];
     snprintf(body, sizeof(body), "Boot failed: %s", flashResultName(res));
-    uiDrawMessage("Error", body);
+    showMessage("Error", body, false);
   }
 }
 
@@ -202,17 +473,14 @@ void clearSlot(int slotIndex) {
   uiDrawProgress("Clearing...", 50);
   const FlashResult res = flashEraseSlot(slotIndex);
   if (res != FlashResult::Ok) {
-    gScreen = Screen::Message;
     char body[96];
     snprintf(body, sizeof(body), "Clear failed: %s", flashResultName(res));
-    uiDrawMessage("Error", body);
+    showMessage("Error", body, false);
     return;
   }
   appsClearSlotLabel(slotIndex);
   showHome();
 }
-
-int pickerVisibleRows() { return uiPickerVisibleRows(); }
 
 void showShade() {
   gScreen = Screen::Shade;
@@ -254,7 +522,6 @@ void handleShadeHit(const UiHit& hit) {
       if (hit.kind == UiHit::Kind::MinuteMinus) delta = -1;
       if (hit.kind == UiHit::Kind::MinutePlus) delta = 1;
       if (!boardAdjustClockMinutes(delta)) {
-        // RTC never set / VL flag — seed a default then adjust.
         BoardClockInfo c = boardClock();
         uint16_t y = c.valid ? c.year : 2026;
         uint8_t mo = c.valid ? c.month : 1;
@@ -270,12 +537,8 @@ void handleShadeHit(const UiHit& hit) {
       break;
     }
     case UiHit::Kind::CleanEveryMinus:
-      boardSetCleanEvery(boardCleanEvery() - 1);
-      uiDrawShade(gSpace);
-      break;
     case UiHit::Kind::CleanEveryPlus:
-      boardSetCleanEvery(boardCleanEvery() + 1);
-      uiDrawShade(gSpace);
+      // Moved to Settings page.
       break;
     case UiHit::Kind::ScrubNow:
       canvasRequestCleanRefresh();
@@ -291,13 +554,156 @@ void handleShadeHit(const UiHit& hit) {
   }
 }
 
+void handleExplorerHit(const UiHit& hit) {
+  const int visible = uiExplorerVisibleRows();
+  switch (hit.kind) {
+    case UiHit::Kind::Back:
+      showHome();
+      break;
+    case UiHit::Kind::GoUp:
+      goUpDir();
+      break;
+    case UiHit::Kind::ScrollUp:
+      if (gScroll > 0) {
+        gScroll--;
+        redrawExplorer();
+      }
+      break;
+    case UiHit::Kind::ScrollDown:
+      if (gScroll + visible < static_cast<int>(gEntries.size())) {
+        gScroll++;
+        redrawExplorer();
+      }
+      break;
+    case UiHit::Kind::SelectEntry:
+      if (hit.index == gSelected) {
+        openSelected();
+      } else {
+        gSelected = hit.index;
+        gSheetOpen = false;
+        redrawExplorer();
+      }
+      break;
+    case UiHit::Kind::ExplorerOpen:
+      openSelected();
+      break;
+    case UiHit::Kind::ExplorerMore:
+      gSheetOpen = !gSheetOpen;
+      redrawExplorer();
+      break;
+    case UiHit::Kind::ExplorerSheetDismiss:
+      gSheetOpen = false;
+      redrawExplorer();
+      break;
+    case UiHit::Kind::ExplorerCopy:
+      gSheetOpen = false;
+      clipboardFromSelection(false);
+      break;
+    case UiHit::Kind::ExplorerCut:
+      gSheetOpen = false;
+      clipboardFromSelection(true);
+      break;
+    case UiHit::Kind::ExplorerPaste:
+      gSheetOpen = false;
+      doPaste();
+      break;
+    case UiHit::Kind::ExplorerRename: {
+      gSheetOpen = false;
+      if (gSelected < 0 || gSelected >= static_cast<int>(gEntries.size())) {
+        showMessage("Select first", "Tap a file or folder, then Rename.", true);
+        break;
+      }
+      const DirEntry& e = gEntries[gSelected];
+      openTextEditor(TextEditMode::Rename, "Rename", e.name.c_str(), e.path.c_str());
+      break;
+    }
+    case UiHit::Kind::ExplorerDelete:
+      gSheetOpen = false;
+      askDelete();
+      break;
+    case UiHit::Kind::ExplorerNew:
+      gSheetOpen = false;
+      openTextEditor(TextEditMode::NewFolder, "New folder", "New Folder", nullptr);
+      break;
+    case UiHit::Kind::ExplorerNewFile:
+      gSheetOpen = false;
+      openTextEditor(TextEditMode::NewFile, "New file", "note.txt", nullptr);
+      break;
+    default:
+      break;
+  }
+}
+
+void handleTextHit(const UiHit& hit) {
+  switch (hit.kind) {
+    case UiHit::Kind::KeyCancel:
+      finishTextEdit(false);
+      break;
+    case UiHit::Kind::KeyDone:
+      finishTextEdit(true);
+      break;
+    case UiHit::Kind::KeyChar:
+      if (hit.value > 0 && hit.value < 128) textAppend(static_cast<char>(hit.value));
+      // After a symbol/punctuation key, return to letters automatically.
+      if (gOskSymbols) gOskSymbols = false;
+      gOskShift = false;
+      redrawTextEdit();
+      break;
+    case UiHit::Kind::KeySpace:
+      textAppend(' ');
+      redrawTextEdit();
+      break;
+    case UiHit::Kind::KeyBackspace:
+      textBackspace();
+      redrawTextEdit();
+      break;
+    case UiHit::Kind::KeyShift:
+      if (gOskSymbols) {
+        gOskSymbols = false;
+        gOskShift = false;
+      } else {
+        gOskShift = !gOskShift;
+      }
+      redrawTextEdit();
+      break;
+    case UiHit::Kind::KeySymbols:
+      gOskSymbols = !gOskSymbols;
+      gOskShift = false;
+      redrawTextEdit();
+      break;
+    default:
+      break;
+  }
+}
+
 void handleTouch(int x, int y) {
   if (gScreen == Screen::Message) {
-    showHome();
+    if (gMessageReturnExplorer) redrawExplorer();
+    else showHome();
     return;
   }
 
   if (gScreen == Screen::Progress) return;
+
+  if (gScreen == Screen::Confirm) {
+    const UiHit hit = uiHitConfirm(x, y);
+    if (hit.kind == UiHit::Kind::ConfirmYes) confirmYes();
+    else if (hit.kind == UiHit::Kind::ConfirmNo) {
+      gConfirmAction = ConfirmAction::None;
+      redrawExplorer();
+    }
+    return;
+  }
+
+  if (gScreen == Screen::ImageView) {
+    redrawExplorer();
+    return;
+  }
+
+  if (gScreen == Screen::TextEdit) {
+    handleTextHit(uiHitTextEdit(x, y, gOskSymbols, gOskShift));
+    return;
+  }
 
   if (gScreen == Screen::Shade) {
     handleShadeHit(uiHitShade(x, y));
@@ -306,8 +712,41 @@ void handleTouch(int x, int y) {
 
   if (gScreen == Screen::Settings) {
     const UiHit hit = uiHitSettings(x, y);
+    auto daysInMonth = [](int y, int m) -> int {
+      static const int d[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+      if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0))) return 29;
+      if (m < 1 || m > 12) return 31;
+      return d[m];
+    };
+    auto adjustDate = [&](int dy, int dm, int dd) {
+      BoardClockInfo c = boardClock();
+      int y = c.valid ? c.year : 2026;
+      int mo = c.valid ? c.month : 1;
+      int d = c.valid ? c.day : 1;
+      int h = c.valid ? c.hour : 12;
+      int mi = c.valid ? c.minute : 0;
+      y += dy;
+      mo += dm;
+      d += dd;
+      while (mo < 1) {
+        mo += 12;
+        --y;
+      }
+      while (mo > 12) {
+        mo -= 12;
+        ++y;
+      }
+      if (y < 2000) y = 2000;
+      if (y > 2099) y = 2099;
+      const int dim = daysInMonth(y, mo);
+      if (d < 1) d = 1;
+      if (d > dim) d = dim;
+      boardSetClock(static_cast<uint16_t>(y), static_cast<uint8_t>(mo), static_cast<uint8_t>(d),
+                    static_cast<uint8_t>(h), static_cast<uint8_t>(mi));
+    };
+
     if (hit.kind == UiHit::Kind::Back) {
-      showHome();
+      showShade();
     } else if (hit.kind == UiHit::Kind::PowerOff) {
       enterSleepWithScreensaver();
     } else if (hit.kind == UiHit::Kind::SleepAfterMinus) {
@@ -316,40 +755,47 @@ void handleTouch(int x, int y) {
     } else if (hit.kind == UiHit::Kind::SleepAfterPlus) {
       boardSetSleepAfterMin(boardSleepAfterMin() + 1);
       uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::FontSizeMinus) {
+      boardSetUiTextSize(boardUiTextSize() - 1);
+      canvasRequestCleanRefresh();
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::FontSizePlus) {
+      boardSetUiTextSize(boardUiTextSize() + 1);
+      canvasRequestCleanRefresh();
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::CleanEveryMinus) {
+      boardSetCleanEvery(boardCleanEvery() - 1);
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::CleanEveryPlus) {
+      boardSetCleanEvery(boardCleanEvery() + 1);
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::YearMinus) {
+      adjustDate(-1, 0, 0);
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::YearPlus) {
+      adjustDate(1, 0, 0);
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::MonthMinus) {
+      adjustDate(0, -1, 0);
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::MonthPlus) {
+      adjustDate(0, 1, 0);
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::DayMinus) {
+      adjustDate(0, 0, -1);
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::DayPlus) {
+      adjustDate(0, 0, 1);
+      uiDrawSettings(gSpace);
     }
     return;
   }
 
-  if (gScreen == Screen::Picker) {
-    const bool canUp = !appsIsRootDir(gPickPath);
-    const UiHit hit =
-        uiHitPicker(x, y, static_cast<int>(gPickEntries.size()), gPickScroll, canUp);
-    const int visible = pickerVisibleRows();
-    switch (hit.kind) {
-      case UiHit::Kind::Back:
-        showHome();
-        break;
-      case UiHit::Kind::GoUp:
-        goUpPickDir();
-        break;
-      case UiHit::Kind::ScrollUp:
-        if (gPickScroll > 0) {
-          gPickScroll--;
-          redrawPicker();
-        }
-        break;
-      case UiHit::Kind::ScrollDown:
-        if (gPickScroll + visible < static_cast<int>(gPickEntries.size())) {
-          gPickScroll++;
-          redrawPicker();
-        }
-        break;
-      case UiHit::Kind::PickFile:
-        installPicked(hit.index);
-        break;
-      default:
-        break;
-    }
+  if (gScreen == Screen::Explorer) {
+    const bool canUp = !appsIsRootDir(gPath);
+    handleExplorerHit(
+        uiHitExplorer(x, y, static_cast<int>(gEntries.size()), gScroll, canUp, gSheetOpen,
+                    fileClipboard().hasItem));
     return;
   }
 
@@ -359,10 +805,13 @@ void handleTouch(int x, int y) {
       case UiHit::Kind::OpenShade:
         showShade();
         break;
+      case UiHit::Kind::OpenFiles:
+        showExplorer(ExplorerMode::Browse, -1);
+        break;
       case UiHit::Kind::BootSlot:
         refreshSlots();
         if (hit.index >= 0 && hit.index < kSlotCount && !gSlots[hit.index].occupied) {
-          showPicker(hit.index);
+          showExplorer(ExplorerMode::Install, hit.index);
         } else {
           bootExisting(hit.index);
         }
@@ -374,7 +823,7 @@ void handleTouch(int x, int y) {
         }
         break;
       case UiHit::Kind::AssignSlot:
-        showPicker(hit.index);
+        showExplorer(ExplorerMode::Install, hit.index);
         break;
       default:
         break;
@@ -404,7 +853,6 @@ void setup() {
   boardInitFrontlight();
   appsLoadSlotLabels();
 
-  // Chip wakes on any BOOT press; only a hold keeps us awake (matches sleep).
   sleepRequireBootHoldToWake(1500);
 
   uiDrawSplash();
@@ -415,14 +863,12 @@ void setup() {
 }
 
 void loop() {
-  // USB-CDC host can push .bin files onto the internal SD (/firmware/...).
   if (gScreen != Screen::Progress) {
     sdSerialPoll();
   }
 
   boardInputUpdate();
 
-  // Hold BOOT (top-left, same as Aurora's power hold) → random screensaver + deep sleep.
   static bool bootSleepArmed = true;
   if (!boardPowerPressed()) {
     bootSleepArmed = true;
@@ -436,19 +882,27 @@ void loop() {
     noteActivity();
     const int dy = y1 - y0;
     const int dx = x1 - x0;
-    // Swipe down from top → open shade
     if (gScreen == Screen::Home && y0 < 120 && dy > 80 && abs(dy) > abs(dx)) {
       showShade();
       return;
     }
-    // Swipe up while shade open → close
     if (gScreen == Screen::Shade && dy < -80 && abs(dy) > abs(dx)) {
       showHome();
       return;
     }
+    if (gScreen == Screen::Explorer && !gSheetOpen && abs(dy) > abs(dx) && abs(dy) > 40) {
+      const int visible = uiExplorerVisibleRows();
+      const int maxScroll =
+          std::max(0, static_cast<int>(gEntries.size()) - visible);
+      // Finger up → content moves up → scroll down (see more below)
+      const int steps = std::max(1, abs(dy) / uiExplorerRowHeight());
+      if (dy < 0) gScroll = std::min(maxScroll, gScroll + steps);
+      else gScroll = std::max(0, gScroll - steps);
+      redrawExplorer();
+      return;
+    }
   }
 
-  // Live brightness drag while shade is open
   if (gScreen == Screen::Shade) {
     int hx = 0, hy = 0;
     if (boardTouchHeld(hx, hy)) {
@@ -461,8 +915,6 @@ void loop() {
         if (pct != lastBright) {
           lastBright = pct;
           boardSetBrightness(pct);
-          // Avoid full e-ink redraw every pixel — only on release via tap path,
-          // but apply light live. Redraw shade occasionally.
           static uint32_t lastDraw = 0;
           const uint32_t now = millis();
           if (now - lastDraw > 400) {
@@ -490,7 +942,6 @@ void loop() {
     }
   }
 
-  // Idle screensaver: same random /sleep image path as manual Sleep.
   const int sleepMin = boardSleepAfterMin();
   if (sleepMin > 0 && gScreen != Screen::Progress &&
       (millis() - gLastActiveMs) > static_cast<uint32_t>(sleepMin) * 60u * 1000u) {
