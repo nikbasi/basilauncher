@@ -41,6 +41,9 @@ struct UiHit {
   int value = -1;  // e.g. brightness from slider
 };
 
+// Centered brand splash shown once at boot before the home UI.
+void uiDrawSplash();
+
 void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space);
 void uiDrawPicker(const std::vector<DirEntry>& entries, int scroll, int targetSlot,
                   size_t maxBytes, const char* currentPath, const FlashSpace& space);

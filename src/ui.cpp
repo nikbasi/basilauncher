@@ -11,22 +11,24 @@ namespace {
 
 constexpr int kPad = 18;
 constexpr int kStatusH = 74;
-constexpr int kDockH = 72;       // picker / message only
+constexpr int kDockH = 88;       // picker / message only — tall enough for fat tap targets
 constexpr int kHomeFooterH = 40;
 constexpr int kCardGap = 14;
 constexpr int kRadius = 16;
 constexpr int kTitle = 2;  // 16×32
 constexpr int kBody = 1;   // 8×16
 constexpr int kSmall = 1;
-constexpr int kBtnH = 44;
-constexpr int kBtnW = 108;
+constexpr int kBtnH = 52;
+constexpr int kBtnW = 120;
+constexpr int kBtnRadius = 14;
 constexpr int kRowH = 58;
 constexpr int kBadge = 52;
+constexpr int kActionBtnH = 52;  // full-width actions (Light / Scrub / About / Sleep)
 
 // Shade layout — compact sheet under the status bar, not full-page.
-constexpr int kShadeGrabH = 26;
+constexpr int kShadeGrabH = 28;
 constexpr int kShadeRadius = 18;
-constexpr int kStepBtn = 44;
+constexpr int kStepBtn = 56;  // +/- steppers — large enough for finger taps
 int gBrightX = 0, gBrightY = 0, gBrightW = 0, gBrightH = 0;
 int gShadePanelBottom = 0;
 
@@ -74,22 +76,23 @@ ShadeGeom shadeGeom() {
   g.sliderY = y;
   y += kStepBtn + 10;
   g.lightY = y;
-  y += 50;
+  y += kActionBtnH + 12;
   g.clockRuleY = y;
   y += 14;
   g.clockLabelY = y;
   y += 24;
   g.timeValueY = y;
-  y += 38;
+  y += 40;
   g.clockRowY = y;
 
-  const int groupW = kStepBtn + 52 + kStepBtn;
-  const int gap = 20;
+  constexpr int kStepGap = 56;  // label width between - and +
+  const int groupW = kStepBtn + kStepGap + kStepBtn;
+  const int gap = 18;
   const int startX = (kScreenW - (groupW * 2 + gap)) / 2;
   g.hourMinusX = startX;
-  g.hourPlusX = startX + kStepBtn + 52;
+  g.hourPlusX = startX + kStepBtn + kStepGap;
   g.minMinusX = startX + groupW + gap;
-  g.minPlusX = g.minMinusX + kStepBtn + 52;
+  g.minPlusX = g.minMinusX + kStepBtn + kStepGap;
   y += kStepBtn + 14;
 
   g.refreshRuleY = y;
@@ -97,13 +100,13 @@ ShadeGeom shadeGeom() {
   g.refreshLabelY = y;
   y += 24;
   g.cleanRowY = y;
-  g.cleanMinusX = kScreenW - kPad - 8 - kStepBtn * 2 - 56;
+  g.cleanMinusX = kScreenW - kPad - 8 - kStepBtn * 2 - kStepGap;
   g.cleanPlusX = kScreenW - kPad - 8 - kStepBtn;
   y += kStepBtn + 12;
   g.scrubY = y;
-  y += 52;
+  y += kActionBtnH + 12;
   g.aboutY = y;
-  y += 52;
+  y += kActionBtnH + 10;
   g.grabY = y;
   g.panelH = (g.grabY + kShadeGrabH + 8) - g.panelY;
   return g;
@@ -207,22 +210,30 @@ void drawStatusBar(const FlashSpace& space, bool shadeHint) {
   canvasDrawLine(0, kStatusH - 1, kScreenW - 1, kStatusH - 1, true);
 }
 
+// Short steppers (+/−) render at scale 2 so the glyph fills the fat tap target.
+int btnLabelScale(const char* label) {
+  if (label && label[0] && !label[1] && (label[0] == '+' || label[0] == '-')) return 2;
+  return kBody;
+}
+
 void drawOutlineBtn(int x, int y, int w, int h, const char* label) {
-  canvasDrawRoundRect(x, y, w, h, 10, true);
-  const int tw = canvasTextWidth(label, kBody);
-  const int th = canvasTextHeight(kBody);
-  canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, true, kBody);
+  canvasDrawRoundRect(x, y, w, h, kBtnRadius, true);
+  const int scale = btnLabelScale(label);
+  const int tw = canvasTextWidth(label, scale);
+  const int th = canvasTextHeight(scale);
+  canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, true, scale);
 }
 
 void drawFilledBtn(int x, int y, int w, int h, const char* label) {
-  canvasFillRoundRect(x, y, w, h, 10, true);
-  const int tw = canvasTextWidth(label, kBody);
-  const int th = canvasTextHeight(kBody);
-  canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, false, kBody);
+  canvasFillRoundRect(x, y, w, h, kBtnRadius, true);
+  const int scale = btnLabelScale(label);
+  const int tw = canvasTextWidth(label, scale);
+  const int th = canvasTextHeight(scale);
+  canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, false, scale);
 }
 
 void drawChromeOutlineBtn(int x, int y, int w, int h, const char* label) {
-  canvasFillRoundRect(x, y, w, h, 10, false);
+  canvasFillRoundRect(x, y, w, h, kBtnRadius, false);
   drawOutlineBtn(x, y, w, h, label);
 }
 
@@ -324,6 +335,32 @@ int uiBrightnessFromTouchX(int touchX) {
   if (pct < 0) pct = 0;
   if (pct > 100) pct = 100;
   return pct;
+}
+
+void uiDrawSplash() {
+  canvasClear();
+  const char* name = "Basilauncher";
+  constexpr int nameScale = 3;
+  const int nameW = canvasTextWidth(name, nameScale);
+  const int nameH = canvasTextHeight(nameScale);
+  char ver[24];
+  snprintf(ver, sizeof(ver), "v%s", BASILAUNCHER_VERSION);
+  const int verW = canvasTextWidth(ver, 2);
+  const int verH = canvasTextHeight(2);
+
+  const int boxW = std::min(kScreenW - 40, nameW + 56);
+  const int boxH = nameH + verH + 56;
+  const int boxX = (kScreenW - boxW) / 2;
+  const int boxY = (kScreenH - boxH) / 2 - 20;
+
+  canvasFillRoundRect(boxX - 3, boxY - 3, boxW + 6, boxH + 6, 22, true);
+  canvasFillRoundRect(boxX, boxY, boxW, boxH, 20, false);
+  canvasDrawRoundRect(boxX, boxY, boxW, boxH, 20, true);
+
+  canvasDrawString((kScreenW - nameW) / 2, boxY + 22, name, true, nameScale);
+  canvasDrawString((kScreenW - verW) / 2, boxY + 22 + nameH + 14, ver, true, 2);
+
+  canvasPresent(EInkDisplay::FULL_REFRESH);
 }
 
 void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space) {
@@ -567,12 +604,12 @@ void uiDrawShade(const FlashSpace& space) {
 
   char pct[16];
   snprintf(pct, sizeof(pct), hasLight ? "%d%%" : "n/a", bright);
-  canvasDrawString(kPad + 8, g.lightY + (44 - canvasTextHeight(kBody)) / 2, pct, true, kBody);
+  canvasDrawString(kPad + 8, g.lightY + (kActionBtnH - canvasTextHeight(kBody)) / 2, pct, true, kBody);
 
   if (hasLight) {
-    const int bx = kScreenW - kPad - 8 - 140;
-    if (lightOn) drawFilledBtn(bx, g.lightY, 140, 44, "Light on");
-    else drawChromeOutlineBtn(bx, g.lightY, 140, 44, "Light off");
+    const int bx = kScreenW - kPad - 8 - 160;
+    if (lightOn) drawFilledBtn(bx, g.lightY, 160, kActionBtnH, "Light on");
+    else drawChromeOutlineBtn(bx, g.lightY, 160, kActionBtnH, "Light off");
   }
 
   drawSectionRule(g.clockRuleY, g.panelX, g.panelW);
@@ -587,14 +624,15 @@ void uiDrawShade(const FlashSpace& space) {
   snprintf(timeBuf, sizeof(timeBuf), "%s", clock.valid ? clock.time : "--:--");
   canvasDrawString(kScreenW / 2 - canvasTextWidth(timeBuf, 2) / 2, g.timeValueY, timeBuf, true, 2);
 
+  constexpr int kStepGap = 56;
   drawChromeOutlineBtn(g.hourMinusX, g.clockRowY, kStepBtn, kStepBtn, "-");
   drawChromeOutlineBtn(g.hourPlusX, g.clockRowY, kStepBtn, kStepBtn, "+");
-  canvasDrawString(g.hourMinusX + kStepBtn + (52 - canvasTextWidth("Hour", kSmall)) / 2,
+  canvasDrawString(g.hourMinusX + kStepBtn + (kStepGap - canvasTextWidth("Hour", kSmall)) / 2,
                    g.clockRowY + (kStepBtn - canvasTextHeight(kSmall)) / 2, "Hour", true, kSmall);
 
   drawChromeOutlineBtn(g.minMinusX, g.clockRowY, kStepBtn, kStepBtn, "-");
   drawChromeOutlineBtn(g.minPlusX, g.clockRowY, kStepBtn, kStepBtn, "+");
-  canvasDrawString(g.minMinusX + kStepBtn + (52 - canvasTextWidth("Min", kSmall)) / 2,
+  canvasDrawString(g.minMinusX + kStepBtn + (kStepGap - canvasTextWidth("Min", kSmall)) / 2,
                    g.clockRowY + (kStepBtn - canvasTextHeight(kSmall)) / 2, "Min", true, kSmall);
 
   drawSectionRule(g.refreshRuleY, g.panelX, g.panelW);
@@ -606,13 +644,13 @@ void uiDrawShade(const FlashSpace& space) {
   drawChromeOutlineBtn(g.cleanPlusX, g.cleanRowY, kStepBtn, kStepBtn, "+");
   char every[12];
   snprintf(every, sizeof(every), "%d", boardCleanEvery());
-  const int everyX = g.cleanMinusX + kStepBtn + (56 - canvasTextWidth(every, kBody)) / 2;
+  const int everyX = g.cleanMinusX + kStepBtn + (kStepGap - canvasTextWidth(every, kBody)) / 2;
   canvasDrawString(everyX, g.cleanRowY + (kStepBtn - canvasTextHeight(kBody)) / 2, every, true, kBody);
 
-  drawChromeOutlineBtn(kPad + 8, g.scrubY, kScreenW - 2 * kPad - 16, 44, "Scrub screen now");
-  drawChromeOutlineBtn(kPad + 8, g.aboutY, kScreenW - 2 * kPad - 16, 44, "About");
+  drawChromeOutlineBtn(kPad + 8, g.scrubY, kScreenW - 2 * kPad - 16, kActionBtnH, "Scrub screen now");
+  drawChromeOutlineBtn(kPad + 8, g.aboutY, kScreenW - 2 * kPad - 16, kActionBtnH, "About");
 
-  canvasFillRoundRect(kScreenW / 2 - 32, g.grabY + (kShadeGrabH - 6) / 2, 64, 6, 3, true);
+  canvasFillRoundRect(kScreenW / 2 - 36, g.grabY + (kShadeGrabH - 7) / 2, 72, 7, 3, true);
   present();
 }
 
@@ -642,9 +680,9 @@ UiHit uiHitShade(int x, int y) {
     }
   }
 
-  if (boardHasFrontlight() && y >= g.lightY && y < g.lightY + 44) {
-    const int bx = kScreenW - kPad - 8 - 140;
-    if (x >= bx && x < bx + 140) {
+  if (boardHasFrontlight() && y >= g.lightY && y < g.lightY + kActionBtnH) {
+    const int bx = kScreenW - kPad - 8 - 160;
+    if (x >= bx && x < bx + 160) {
       hit.kind = UiHit::Kind::LightToggle;
       return hit;
     }
@@ -680,12 +718,12 @@ UiHit uiHitShade(int x, int y) {
     }
   }
 
-  if (y >= g.scrubY && y < g.scrubY + 44 && x >= kPad + 8 && x < kScreenW - kPad - 8) {
+  if (y >= g.scrubY && y < g.scrubY + kActionBtnH && x >= kPad + 8 && x < kScreenW - kPad - 8) {
     hit.kind = UiHit::Kind::ScrubNow;
     return hit;
   }
 
-  if (y >= g.aboutY && y < g.aboutY + 44 && x >= kPad + 8 && x < kScreenW - kPad - 8) {
+  if (y >= g.aboutY && y < g.aboutY + kActionBtnH && x >= kPad + 8 && x < kScreenW - kPad - 8) {
     hit.kind = UiHit::Kind::Settings;
     return hit;
   }
@@ -721,20 +759,21 @@ void uiDrawSettings(const FlashSpace& space) {
   y += 36;
 
   canvasDrawString(kPad, y + 12, "Auto-sleep", true, kBody);
-  constexpr int step = 44;
-  drawOutlineBtn(kScreenW - kPad - step * 2 - 72, y, step, step, "-");
+  constexpr int step = kStepBtn;
+  constexpr int valueW = 80;
+  drawOutlineBtn(kScreenW - kPad - step * 2 - valueW, y, step, step, "-");
   drawOutlineBtn(kScreenW - kPad - step, y, step, step, "+");
   char sleepTxt[16];
   if (boardSleepAfterMin() <= 0) snprintf(sleepTxt, sizeof(sleepTxt), "off");
   else snprintf(sleepTxt, sizeof(sleepTxt), "%dm", boardSleepAfterMin());
   const int sx =
-      kScreenW - kPad - step * 2 - 72 + step + (72 - step - canvasTextWidth(sleepTxt, kBody)) / 2;
-  canvasDrawString(sx, y + 12, sleepTxt, true, kBody);
+      kScreenW - kPad - step * 2 - valueW + step + (valueW - step - canvasTextWidth(sleepTxt, kBody)) / 2;
+  canvasDrawString(sx, y + (step - canvasTextHeight(kBody)) / 2, sleepTxt, true, kBody);
   y += step + 24;
 
-  drawOutlineBtn(kPad, y, kScreenW - 2 * kPad, 48, "Sleep / power off");
-  y += 64;
-  drawFilledBtn(kPad, y, kScreenW - 2 * kPad, 48, "Back");
+  drawOutlineBtn(kPad, y, kScreenW - 2 * kPad, kActionBtnH, "Sleep / power off");
+  y += kActionBtnH + 16;
+  drawFilledBtn(kPad, y, kScreenW - 2 * kPad, kActionBtnH, "Back");
   presentClean();
 }
 
@@ -762,7 +801,7 @@ void uiDrawMessage(const char* title, const char* body) {
   drawStatusBar(appsFlashSpace(), false);
   canvasDrawString(kPad, kStatusH + 28, title ? title : "Notice", true, kTitle);
   drawWrappedBody(body, kStatusH + 70);
-  drawFilledBtn(kPad, kScreenH - kDockH - 70, kScreenW - 2 * kPad, 48, "OK");
+  drawFilledBtn(kPad, kScreenH - kDockH - 70, kScreenW - 2 * kPad, kActionBtnH, "OK");
   presentClean();
 }
 
@@ -798,9 +837,10 @@ UiHit uiHitSettings(int x, int y) {
   UiHit hit;
   // Layout must match uiDrawSettings (includes BOOT sleep tip line).
   int yCursor = kStatusH + kPad * 2 + 36 + 32 + 22 + 22 + 32 + 22 + 32 + 22 + 22 + 32 + 36;
-  constexpr int step = 44;
+  constexpr int step = kStepBtn;
+  constexpr int valueW = 80;
   if (y >= yCursor && y < yCursor + step) {
-    const int minusX = kScreenW - kPad - step * 2 - 72;
+    const int minusX = kScreenW - kPad - step * 2 - valueW;
     const int plusX = kScreenW - kPad - step;
     if (x >= minusX && x < minusX + step) {
       hit.kind = UiHit::Kind::SleepAfterMinus;
@@ -812,11 +852,12 @@ UiHit uiHitSettings(int x, int y) {
     }
   }
   yCursor += step + 24;
-  if (y >= yCursor && y < yCursor + 48 && x >= kPad && x < kScreenW - kPad) {
+  if (y >= yCursor && y < yCursor + kActionBtnH && x >= kPad && x < kScreenW - kPad) {
     hit.kind = UiHit::Kind::PowerOff;
     return hit;
   }
-  if (y >= yCursor + 64 && y < yCursor + 112 && x >= kPad && x < kScreenW - kPad) {
+  if (y >= yCursor + kActionBtnH + 16 && y < yCursor + kActionBtnH * 2 + 16 && x >= kPad &&
+      x < kScreenW - kPad) {
     hit.kind = UiHit::Kind::Back;
     return hit;
   }

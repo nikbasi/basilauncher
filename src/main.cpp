@@ -407,11 +407,8 @@ void setup() {
   // Chip wakes on any BOOT press; only a hold keeps us awake (matches sleep).
   sleepRequireBootHoldToWake(1500);
 
-  canvasClear();
-  canvasDrawString(120, 400, "Basilauncher", true, 3);
-  canvasDrawString(200, 470, "v" BASILAUNCHER_VERSION, true, 2);
-  canvasPresent(EInkDisplay::FULL_REFRESH);
-  delay(400);
+  uiDrawSplash();
+  delay(1200);
 
   showHome();
   noteActivity();
