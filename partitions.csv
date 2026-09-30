@@ -1,0 +1,12 @@
+# Basilauncher partition map (16MB). Factory is the launcher — never written by the app UI.
+# Guest apps live only in ota_0..ota_3. One large slot (~6MB) fits CrossPoint; smaller
+# slots take lighter firmwares so more than two apps can coexist when they fit.
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+factory,  app,  factory, 0x10000, 0x180000,
+ota_0,    app,  ota_0,   0x190000,0x600000,
+ota_1,    app,  ota_1,   0x790000,0x300000,
+ota_2,    app,  ota_2,   0xA90000,0x300000,
+ota_3,    app,  ota_3,   0xD90000,0x240000,
+coredump, data, coredump,0xFD0000,0x30000,
