@@ -9,6 +9,7 @@
 #include "canvas.h"
 #include "flash_install.h"
 #include "sd_serial.h"
+#include "sleep_screen.h"
 #include "ui.h"
 
 #include <SD.h>
@@ -24,6 +25,9 @@ FlashSpace gSpace;
 int gPickScroll = 0;
 int gAssignSlot = -1;  // -1 = best-fit; 0..3 = specific empty slot
 uint8_t gLastClockMinute = 255;
+uint32_t gLastActiveMs = 0;
+
+void noteActivity() { gLastActiveMs = millis(); }
 
 struct ProgressCtx {
   const char* title;
@@ -136,9 +140,7 @@ void installFileToSlot(int fileIndex, int slotIndex) {
   }
 
   appsSaveSlotLabel(slotIndex, file.name.c_str(), file.size);
-  uiDrawProgress("Starting...", 100);
-  delay(300);
-  bootSlotPendingVerify(slotIndex);
+  showHome();
 }
 
 void installPicked(int pickIndex) {
@@ -215,6 +217,7 @@ int pickerVisibleRows() { return uiPickerVisibleRows(); }
 void showShade() {
   gScreen = Screen::Shade;
   refreshSlots();
+  canvasRequestCleanRefresh();
   uiDrawShade(gSpace);
 }
 
@@ -266,6 +269,23 @@ void handleShadeHit(const UiHit& hit) {
       uiDrawShade(gSpace);
       break;
     }
+    case UiHit::Kind::CleanEveryMinus:
+      boardSetCleanEvery(boardCleanEvery() - 1);
+      uiDrawShade(gSpace);
+      break;
+    case UiHit::Kind::CleanEveryPlus:
+      boardSetCleanEvery(boardCleanEvery() + 1);
+      uiDrawShade(gSpace);
+      break;
+    case UiHit::Kind::ScrubNow:
+      canvasRequestCleanRefresh();
+      uiDrawShade(gSpace);
+      break;
+    case UiHit::Kind::Settings:
+      gScreen = Screen::Settings;
+      refreshSlots();
+      uiDrawSettings(gSpace);
+      break;
     default:
       break;
   }
@@ -289,12 +309,13 @@ void handleTouch(int x, int y) {
     if (hit.kind == UiHit::Kind::Back) {
       showHome();
     } else if (hit.kind == UiHit::Kind::PowerOff) {
-      canvasClear();
-      canvasDrawString(160, 450, "Powered off", true, 2);
-      canvasPresent(EInkDisplay::FULL_REFRESH);
-      delay(500);
-      boardPrepareDeepSleep();
-      esp_deep_sleep_start();
+      enterSleepWithScreensaver();
+    } else if (hit.kind == UiHit::Kind::SleepAfterMinus) {
+      boardSetSleepAfterMin(boardSleepAfterMin() <= 0 ? 0 : boardSleepAfterMin() - 1);
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::SleepAfterPlus) {
+      boardSetSleepAfterMin(boardSleepAfterMin() + 1);
+      uiDrawSettings(gSpace);
     }
     return;
   }
@@ -337,14 +358,6 @@ void handleTouch(int x, int y) {
     switch (hit.kind) {
       case UiHit::Kind::OpenShade:
         showShade();
-        break;
-      case UiHit::Kind::Settings:
-        gScreen = Screen::Settings;
-        refreshSlots();
-        uiDrawSettings(gSpace);
-        break;
-      case UiHit::Kind::OpenPicker:
-        showPicker(-1);
         break;
       case UiHit::Kind::BootSlot:
         refreshSlots();
@@ -391,6 +404,9 @@ void setup() {
   boardInitFrontlight();
   appsLoadSlotLabels();
 
+  // Chip wakes on any BOOT press; only a hold keeps us awake (matches sleep).
+  sleepRequireBootHoldToWake(1500);
+
   canvasClear();
   canvasDrawString(120, 400, "Basilauncher", true, 3);
   canvasDrawString(200, 470, "v" BASILAUNCHER_VERSION, true, 2);
@@ -398,6 +414,7 @@ void setup() {
   delay(400);
 
   showHome();
+  noteActivity();
 }
 
 void loop() {
@@ -408,8 +425,18 @@ void loop() {
 
   boardInputUpdate();
 
+  // Hold BOOT (top-left, same as Aurora's power hold) → random screensaver + deep sleep.
+  static bool bootSleepArmed = true;
+  if (!boardPowerPressed()) {
+    bootSleepArmed = true;
+  } else if (bootSleepArmed && boardPowerHeldMs() > 1500 && gScreen != Screen::Progress) {
+    bootSleepArmed = false;
+    enterSleepWithScreensaver();
+  }
+
   int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
   if (boardPollSwipe(x0, y0, x1, y1)) {
+    noteActivity();
     const int dy = y1 - y0;
     const int dx = x1 - x0;
     // Swipe down from top → open shade
@@ -428,6 +455,7 @@ void loop() {
   if (gScreen == Screen::Shade) {
     int hx = 0, hy = 0;
     if (boardTouchHeld(hx, hy)) {
+      noteActivity();
       int bx, by, bw, bh;
       uiShadeBrightnessTrack(bx, by, bw, bh);
       if (hy >= by - 20 && hy <= by + bh + 20 && hx >= bx && hx <= bx + bw) {
@@ -451,6 +479,7 @@ void loop() {
 
   int x = 0, y = 0;
   if (boardPollTouch(x, y)) {
+    noteActivity();
     Serial.printf("tap %d,%d screen=%d\n", x, y, static_cast<int>(gScreen));
     handleTouch(x, y);
   }
@@ -462,6 +491,13 @@ void loop() {
       refreshSlots();
       uiDrawHome(gSlots, gSpace);
     }
+  }
+
+  // Idle screensaver: same random /sleep image path as manual Sleep.
+  const int sleepMin = boardSleepAfterMin();
+  if (sleepMin > 0 && gScreen != Screen::Progress &&
+      (millis() - gLastActiveMs) > static_cast<uint32_t>(sleepMin) * 60u * 1000u) {
+    enterSleepWithScreensaver();
   }
   delay(20);
 }

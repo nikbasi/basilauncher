@@ -29,6 +29,14 @@ void boardInitFrontlight();
 void boardMarkFactoryValid();
 void boardPrepareDeepSleep();
 
+// E-ink scrub cadence (1 = every frame, higher = fewer flashes). Persisted.
+int boardCleanEvery();
+void boardSetCleanEvery(int n);
+
+// Minutes of idle before auto-sleep (0 = never). Persisted.
+int boardSleepAfterMin();
+void boardSetSleepAfterMin(int minutes);
+
 BoardPowerInfo boardPower();
 BoardClockInfo boardClock();
 bool boardAdjustClockMinutes(int deltaMinutes);
@@ -52,3 +60,7 @@ bool boardPollTouch(int& x, int& y);
 bool boardPollSwipe(int& x0, int& y0, int& x1, int& y1);
 bool boardTouchHeld(int& x, int& y);
 void boardSuppressTouch();
+
+// BOOT / power key (GPIO0 on LilyGO T5 S3 Pro) — same physical key Aurora uses.
+bool boardPowerPressed();
+unsigned long boardPowerHeldMs();

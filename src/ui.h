@@ -30,6 +30,11 @@ struct UiHit {
     HourPlus,
     MinuteMinus,
     MinutePlus,
+    CleanEveryMinus,
+    CleanEveryPlus,
+    ScrubNow,
+    SleepAfterMinus,
+    SleepAfterPlus,
   };
   Kind kind = Kind::None;
   int index = -1;

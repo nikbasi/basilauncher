@@ -26,6 +26,7 @@ bool gRtcOk = false;
 uint8_t gBrightness = 40;
 bool gLightOn = false;
 bool gLightHw = false;
+int gSleepAfterMin = 10;
 
 // LilyGO T5 S3 Pro: PT4103 EN on GPIO11, 1 kHz / 12-bit (matches BoardConfig).
 constexpr int kFlGpio = 11;
@@ -106,14 +107,45 @@ void boardInitClock() {
 void boardInitFrontlight() {
   gpio_hold_dis(static_cast<gpio_num_t>(kFlGpio));
   gLightHw = ledcAttach(kFlGpio, kFlFreqHz, kFlResBits);
+  int cleanEvery = 8;
+  int sleepAfter = 10;
   if (gPrefs.begin("basil", true)) {
     gBrightness = gPrefs.getUChar("bright", 40);
     gLightOn = gPrefs.getBool("lightOn", false);
+    cleanEvery = static_cast<int>(gPrefs.getUChar("cleanEv", 8));
+    sleepAfter = static_cast<int>(gPrefs.getUChar("sleepMin", 10));
     gPrefs.end();
   }
   if (gBrightness > 100) gBrightness = 100;
+  canvasSetCleanEvery(cleanEvery);
+  gSleepAfterMin = sleepAfter;
+  if (gSleepAfterMin < 0) gSleepAfterMin = 0;
+  if (gSleepAfterMin > 60) gSleepAfterMin = 60;
   applyFrontlight();
-  Serial.printf("Frontlight: hw=%d on=%d bright=%u\n", gLightHw ? 1 : 0, gLightOn ? 1 : 0, gBrightness);
+  Serial.printf("Frontlight: hw=%d on=%d bright=%u cleanEvery=%d sleepAfter=%d\n", gLightHw ? 1 : 0,
+                gLightOn ? 1 : 0, gBrightness, canvasCleanEvery(), gSleepAfterMin);
+}
+
+int boardCleanEvery() { return canvasCleanEvery(); }
+
+void boardSetCleanEvery(int n) {
+  canvasSetCleanEvery(n);
+  if (gPrefs.begin("basil", false)) {
+    gPrefs.putUChar("cleanEv", static_cast<uint8_t>(canvasCleanEvery()));
+    gPrefs.end();
+  }
+}
+
+int boardSleepAfterMin() { return gSleepAfterMin; }
+
+void boardSetSleepAfterMin(int minutes) {
+  if (minutes < 0) minutes = 0;
+  if (minutes > 60) minutes = 60;
+  gSleepAfterMin = minutes;
+  if (gPrefs.begin("basil", false)) {
+    gPrefs.putUChar("sleepMin", static_cast<uint8_t>(gSleepAfterMin));
+    gPrefs.end();
+  }
 }
 
 void boardMarkFactoryValid() {
@@ -204,8 +236,13 @@ bool boardSdOk() { return gSdOk; }
 bool boardTouchOk() { return gTouchOk; }
 
 void boardInputUpdate() {
-  if (gTouchOk) gInput.update();
+  // Always poll — BOOT/power is a direct GPIO even when touch is absent.
+  gInput.update();
 }
+
+bool boardPowerPressed() { return gInput.isPressed(InputManager::BTN_POWER); }
+
+unsigned long boardPowerHeldMs() { return gInput.getPowerButtonHeldTime(); }
 
 bool boardPollTouch(int& x, int& y) {
   if (!gTouchOk) return false;

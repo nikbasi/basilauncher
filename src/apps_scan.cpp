@@ -108,14 +108,15 @@ SlotInfo appsSlotInfo(int slotIndex) {
     prefs.end();
   }
 
-  if (n.length() > 0) {
+  if (!info.occupied) {
+    info.name = "Empty";
+    info.size = 0;
+  } else if (n.length() > 0) {
     info.name = n.c_str();
-  } else if (info.occupied) {
+  } else {
     char fallback[12];
     snprintf(fallback, sizeof(fallback), "ota_%d", slotIndex);
     info.name = fallback;
-  } else {
-    info.name = "Empty";
   }
   return info;
 }

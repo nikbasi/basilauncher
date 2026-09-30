@@ -15,6 +15,11 @@ extern EInkDisplay display;
 void canvasBegin();
 void canvasClear();
 void canvasPresent(EInkDisplay::RefreshMode mode = EInkDisplay::HALF_REFRESH);
+// FAST by default; inserts a HALF scrub every few frames (and when requested).
+void canvasPresentAuto();
+void canvasRequestCleanRefresh();
+void canvasSetCleanEvery(int n);  // 1..30 frames between clean scrubs
+int canvasCleanEvery();
 
 void canvasSetPixel(int x, int y, bool black);
 void canvasFillRect(int x, int y, int w, int h, bool black);

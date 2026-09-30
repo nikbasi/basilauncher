@@ -29,9 +29,10 @@ restarts the app. The pending first press is a flag word in the sector at
 |------|-----------|------|--------|
 | Launcher | `factory` | 1.5 MB | Protected |
 | A | `ota_0` | 6 MB | Fits CrossPoint |
-| B | `ota_1` | 3 MB | Smaller apps |
-| C | `ota_2` | 3 MB | Smaller apps |
+| B | `ota_1` | 2.5 MB | Smaller apps |
+| C | `ota_2` | 2.5 MB | Smaller apps |
 | D | `ota_3` | 2.25 MB | Smaller apps |
+| (shared) | `spiffs` | 1 MB | LittleFS for Meshtastic-style guests |
 
 Status bar always shows **version** and **free / total guest flash**.
 

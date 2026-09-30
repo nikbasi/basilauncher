@@ -11,32 +11,142 @@ namespace {
 
 constexpr int kPad = 18;
 constexpr int kStatusH = 74;
-constexpr int kDockH = 72;
-constexpr int kCardGap = 12;
-constexpr int kRadius = 14;
+constexpr int kDockH = 72;       // picker / message only
+constexpr int kHomeFooterH = 40;
+constexpr int kCardGap = 14;
+constexpr int kRadius = 16;
 constexpr int kTitle = 2;  // 16×32
 constexpr int kBody = 1;   // 8×16
 constexpr int kSmall = 1;
-constexpr int kBtnH = 42;
-constexpr int kBtnW = 100;
+constexpr int kBtnH = 44;
+constexpr int kBtnW = 108;
 constexpr int kRowH = 58;
-constexpr int kBadge = 44;
+constexpr int kBadge = 52;
 
-// Shade layout
-constexpr int kShadeGrabH = 28;
-constexpr int kStepBtn = 48;
+// Shade layout — compact sheet under the status bar, not full-page.
+constexpr int kShadeGrabH = 26;
+constexpr int kShadeRadius = 18;
+constexpr int kStepBtn = 44;
 int gBrightX = 0, gBrightY = 0, gBrightW = 0, gBrightH = 0;
+int gShadePanelBottom = 0;
+
+struct ShadeGeom {
+  int panelX = 0;
+  int panelY = 0;
+  int panelW = 0;
+  int panelH = 0;
+  int titleY = 0;
+  int frontRuleY = 0;
+  int frontLabelY = 0;
+  int sliderY = 0;
+  int lightY = 0;
+  int clockRuleY = 0;
+  int clockLabelY = 0;
+  int timeValueY = 0;
+  int clockRowY = 0;
+  int hourMinusX = 0;
+  int hourPlusX = 0;
+  int minMinusX = 0;
+  int minPlusX = 0;
+  int refreshRuleY = 0;
+  int refreshLabelY = 0;
+  int cleanRowY = 0;
+  int cleanMinusX = 0;
+  int cleanPlusX = 0;
+  int scrubY = 0;
+  int aboutY = 0;
+  int grabY = 0;
+};
+
+ShadeGeom shadeGeom() {
+  ShadeGeom g;
+  g.panelX = kPad / 2;
+  g.panelY = kStatusH + 6;
+  g.panelW = kScreenW - kPad;
+
+  int y = g.panelY + 12;
+  g.titleY = y;
+  y += 34;
+  g.frontRuleY = y;
+  y += 14;
+  g.frontLabelY = y;
+  y += 24;
+  g.sliderY = y;
+  y += kStepBtn + 10;
+  g.lightY = y;
+  y += 50;
+  g.clockRuleY = y;
+  y += 14;
+  g.clockLabelY = y;
+  y += 24;
+  g.timeValueY = y;
+  y += 38;
+  g.clockRowY = y;
+
+  const int groupW = kStepBtn + 52 + kStepBtn;
+  const int gap = 20;
+  const int startX = (kScreenW - (groupW * 2 + gap)) / 2;
+  g.hourMinusX = startX;
+  g.hourPlusX = startX + kStepBtn + 52;
+  g.minMinusX = startX + groupW + gap;
+  g.minPlusX = g.minMinusX + kStepBtn + 52;
+  y += kStepBtn + 14;
+
+  g.refreshRuleY = y;
+  y += 14;
+  g.refreshLabelY = y;
+  y += 24;
+  g.cleanRowY = y;
+  g.cleanMinusX = kScreenW - kPad - 8 - kStepBtn * 2 - 56;
+  g.cleanPlusX = kScreenW - kPad - 8 - kStepBtn;
+  y += kStepBtn + 12;
+  g.scrubY = y;
+  y += 52;
+  g.aboutY = y;
+  y += 52;
+  g.grabY = y;
+  g.panelH = (g.grabY + kShadeGrabH + 8) - g.panelY;
+  return g;
+}
+
+void fillLightGrayRoundRect(int x, int y, int w, int h, int r) {
+  canvasFillRoundRect(x, y, w, h, r, false);
+  const int x1 = x + w;
+  const int y1 = y + h;
+  for (int yy = y; yy < y1; ++yy) {
+    for (int xx = x; xx < x1; ++xx) {
+      const int dx = (xx < x + r) ? (x + r - xx) : ((xx >= x1 - r) ? (xx - (x1 - r - 1)) : 0);
+      const int dy = (yy < y + r) ? (y + r - yy) : ((yy >= y1 - r) ? (yy - (y1 - r - 1)) : 0);
+      if (dx * dx + dy * dy > r * r) continue;
+      if (((xx + 2 * yy) & 3) == 0) canvasSetPixel(xx, yy, true);
+    }
+  }
+}
+
+void drawDimBackdrop(int fromY) {
+  for (int yy = fromY; yy < kScreenH; yy += 5) {
+    for (int xx = ((yy / 5) & 1) ? 2 : 0; xx < kScreenW; xx += 5) {
+      canvasSetPixel(xx, yy, true);
+    }
+  }
+}
+
+void drawSectionRule(int y, int panelX, int panelW) {
+  canvasDrawLine(panelX + 14, y, panelX + panelW - 14, y, true);
+}
+
+int homeListTop() {
+  // Status → pad → Apps title → gap → first card.
+  return kStatusH + 18 + canvasTextHeight(kTitle) + 18;
+}
 
 int slotCardH() {
-  const int titleBlock = 30;
-  const int footer = 24;
-  const int avail = kScreenH - kStatusH - kDockH - kPad * 2 - titleBlock - footer;
+  const int top = homeListTop();
+  const int avail = kScreenH - top - kHomeFooterH - kPad;
   return (avail - (kSlotCount - 1) * kCardGap) / kSlotCount;
 }
 
-int slotCardY(int index) {
-  return kStatusH + kPad + 30 + index * (slotCardH() + kCardGap);
-}
+int slotCardY(int index) { return homeListTop() + index * (slotCardH() + kCardGap); }
 
 void truncate(char* s, size_t maxChars) {
   if (!s) return;
@@ -69,6 +179,10 @@ void drawStatusBar(const FlashSpace& space, bool shadeHint) {
   const BoardPowerInfo power = boardPower();
 
   canvasDrawString(kPad, 8, clock.valid ? clock.time : "--:--", true, 2);
+  if (clock.valid && clock.date[0]) {
+    const int timeW = canvasTextWidth(clock.valid ? clock.time : "--:--", 2);
+    canvasDrawString(kPad + timeW + 14, 16, clock.date, true, kBody);
+  }
 
   char batt[16];
   if (power.known) {
@@ -86,12 +200,6 @@ void drawStatusBar(const FlashSpace& space, bool shadeHint) {
   snprintf(brand, sizeof(brand), "Basilauncher  v%s", BASILAUNCHER_VERSION);
   canvasDrawString(kPad, 44, brand, true, kBody);
 
-  char freeBuf[24];
-  appsFormatBytes(space.guestFree, freeBuf, sizeof(freeBuf));
-  char freeLine[40];
-  snprintf(freeLine, sizeof(freeLine), "free %s", freeBuf);
-  canvasDrawString(kScreenW - kPad - canvasTextWidth(freeLine, kSmall), 44, freeLine, true, kSmall);
-
   if (shadeHint) {
     // Grabber cue in the status bar
     canvasFillRoundRect(kScreenW / 2 - 28, kStatusH - 10, 56, 5, 2, true);
@@ -102,24 +210,20 @@ void drawStatusBar(const FlashSpace& space, bool shadeHint) {
 void drawOutlineBtn(int x, int y, int w, int h, const char* label) {
   canvasDrawRoundRect(x, y, w, h, 10, true);
   const int tw = canvasTextWidth(label, kBody);
-  canvasDrawString(x + (w - tw) / 2, y + (h - 16) / 2, label, true, kBody);
+  const int th = canvasTextHeight(kBody);
+  canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, true, kBody);
 }
 
 void drawFilledBtn(int x, int y, int w, int h, const char* label) {
   canvasFillRoundRect(x, y, w, h, 10, true);
   const int tw = canvasTextWidth(label, kBody);
-  canvasDrawString(x + (w - tw) / 2, y + (h - 16) / 2, label, false, kBody);
+  const int th = canvasTextHeight(kBody);
+  canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, false, kBody);
 }
 
-void drawDockTwo(const char* left, const char* right) {
-  const int y = kScreenH - kDockH;
-  canvasDrawLine(0, y, kScreenW - 1, y, true);
-  canvasFillRect(0, y + 1, kScreenW, kDockH - 1, false);
-  const int tileW = (kScreenW - 3 * kPad) / 2;
-  const int tileH = kDockH - 20;
-  const int tileY = y + 10;
-  drawOutlineBtn(kPad, tileY, tileW, tileH, left);
-  drawFilledBtn(kPad * 2 + tileW, tileY, tileW, tileH, right);
+void drawChromeOutlineBtn(int x, int y, int w, int h, const char* label) {
+  canvasFillRoundRect(x, y, w, h, 10, false);
+  drawOutlineBtn(x, y, w, h, label);
 }
 
 void drawSlotCard(int index, const SlotInfo& slot) {
@@ -128,41 +232,63 @@ void drawSlotCard(int index, const SlotInfo& slot) {
   const int w = kScreenW - 2 * kPad;
   const int h = slotCardH();
 
+  if (slot.occupied) {
+    // Light gray fill marks installed apps as tappable.
+    fillLightGrayRoundRect(x, y, w, h, kRadius);
+  }
   canvasDrawRoundRect(x, y, w, h, kRadius, true);
 
-  canvasFillRoundRect(x + 14, y + 16, kBadge, kBadge, 10, true);
+  canvasFillRoundRect(x + 16, y + 18, kBadge, kBadge, 12, true);
   char letter[2] = {slot.label[0], 0};
   const int lw = canvasTextWidth(letter, 2);
-  canvasDrawString(x + 14 + (kBadge - lw) / 2, y + 16 + (kBadge - 32) / 2, letter, false, 2);
+  canvasDrawString(x + 16 + (kBadge - lw) / 2, y + 18 + (kBadge - 32) / 2, letter, false, 2);
 
-  const int textX = x + 14 + kBadge + 14;
+  const int textX = x + 16 + kBadge + 16;
+  const int textW = w - (textX - x) - 16;
   if (slot.occupied) {
     char name[40];
     snprintf(name, sizeof(name), "%s", slot.name.c_str());
-    truncate(name, 18);
-    canvasDrawString(textX, y + 18, name, true, kTitle);
+    truncate(name, 20);
+    canvasDrawString(textX, y + 20, name, true, kTitle);
 
     char sz[48], used[24], cap[24];
     appsFormatBytes(slot.size ? slot.size : slot.capacity, used, sizeof(used));
     appsFormatBytes(slot.capacity, cap, sizeof(cap));
     snprintf(sz, sizeof(sz), "%s / %s", used, cap);
-    canvasDrawString(textX, y + 54, sz, true, kBody);
+    canvasDrawString(textX, y + 56, sz, true, kBody);
+
+    const int barY = y + 80;
+    const int barW = textW;
+    const int barH = 10;
+    canvasFillRoundRect(textX, barY, barW, barH, 4, false);
+    canvasDrawRoundRect(textX, barY, barW, barH, 4, true);
+    size_t usedBytes = slot.size ? slot.size : slot.capacity;
+    if (slot.capacity > 0 && usedBytes > 0) {
+      int fill = static_cast<int>((static_cast<uint64_t>(barW - 4) * usedBytes) / slot.capacity);
+      if (fill < 2) fill = 2;
+      if (fill > barW - 4) fill = barW - 4;
+      canvasFillRoundRect(textX + 2, barY + 2, fill, barH - 4, 3, true);
+    }
 
     const int by = y + h - kBtnH - 14;
-    drawOutlineBtn(x + w - 2 * kBtnW - 28, by, kBtnW, kBtnH, "Clear");
-    drawFilledBtn(x + w - kBtnW - 14, by, kBtnW, kBtnH, "Boot");
+    drawChromeOutlineBtn(x + w - kBtnW - 14, by, kBtnW, kBtnH, "Clear");
   } else {
-    canvasDrawString(textX, y + 18, "Empty", true, kTitle);
+    canvasDrawString(textX, y + 20, "Empty slot", true, kTitle);
     char cap[40], capBuf[24];
     appsFormatBytes(slot.capacity, capBuf, sizeof(capBuf));
-    snprintf(cap, sizeof(cap), "holds up to %s", capBuf);
-    canvasDrawString(textX, y + 54, cap, true, kBody);
+    snprintf(cap, sizeof(cap), "Up to %s", capBuf);
+    canvasDrawString(textX, y + 56, cap, true, kBody);
+    canvasDrawString(textX, y + 80, "Tap to install a .bin", true, kSmall);
     const int by = y + h - kBtnH - 14;
-    drawFilledBtn(x + w - kBtnW - 14, by, kBtnW, kBtnH, "Assign");
+    drawFilledBtn(x + w - kBtnW - 14, by, kBtnW, kBtnH, "Install");
   }
 }
 
-void present() { canvasPresent(EInkDisplay::HALF_REFRESH); }
+void present() { canvasPresentAuto(); }
+void presentClean() {
+  canvasRequestCleanRefresh();
+  canvasPresentAuto();
+}
 
 void drawWrappedBody(const char* body, int startY) {
   if (!body) return;
@@ -204,16 +330,18 @@ void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space) {
   canvasClear();
   drawStatusBar(space, true);
 
-  canvasDrawString(kPad, kStatusH + kPad - 2, "Apps", true, kTitle);
+  const int appsY = kStatusH + 18;
+  canvasDrawString(kPad, appsY, "Apps", true, kTitle);
+
   for (int i = 0; i < kSlotCount; ++i) drawSlotCard(i, slots[i]);
 
-  char foot[48], total[24];
-  appsFormatBytes(space.guestTotal, total, sizeof(total));
-  snprintf(foot, sizeof(foot), "%d empty · %s guest", space.emptySlots, total);
-  canvasDrawString(kPad, kScreenH - kDockH - 22, foot, true, kSmall);
-
-  drawDockTwo("Settings", "Install");
-  present();
+  const int footY = kScreenH - kHomeFooterH + (kHomeFooterH - canvasTextHeight(kSmall)) / 2;
+  canvasDrawString(kPad, footY, "Swipe down for settings", true, kSmall);
+  char freeBuf[24], freeLine[40];
+  appsFormatBytes(space.guestFree, freeBuf, sizeof(freeBuf));
+  snprintf(freeLine, sizeof(freeLine), "free %s", freeBuf);
+  canvasDrawString(kScreenW - kPad - canvasTextWidth(freeLine, kSmall), footY, freeLine, true, kSmall);
+  presentClean();
 }
 
 constexpr int kPickerRowH = 72;
@@ -352,7 +480,7 @@ void uiDrawPicker(const std::vector<DirEntry>& entries, int scroll, int targetSl
   } else {
     drawOutlineBtn(kPad, y + 10, kScreenW - 2 * kPad, kDockH - 20, "Cancel");
   }
-  present();
+  presentClean();
 }
 
 UiHit uiHitPicker(int x, int y, int entryCount, int scroll, bool canGoUp) {
@@ -406,32 +534,31 @@ void uiDrawShade(const FlashSpace& space) {
   canvasClear();
   drawStatusBar(space, false);
 
-  // Panel card
-  const int panelY = kStatusH + 8;
-  const int panelH = kScreenH - panelY - kPad;
-  canvasDrawRoundRect(kPad / 2, panelY, kScreenW - kPad, panelH, 16, true);
+  const ShadeGeom g = shadeGeom();
+  gShadePanelBottom = g.panelY + g.panelH;
+  drawDimBackdrop(gShadePanelBottom);
 
-  // Grabber
-  canvasFillRoundRect(kScreenW / 2 - 32, panelY + 10, 64, 6, 3, true);
-  canvasDrawString(kPad + 8, panelY + kShadeGrabH, "Quick settings", true, kTitle);
+  fillLightGrayRoundRect(g.panelX, g.panelY, g.panelW, g.panelH, kShadeRadius);
+  canvasDrawRoundRect(g.panelX, g.panelY, g.panelW, g.panelH, kShadeRadius, true);
 
-  int y = panelY + kShadeGrabH + 40;
+  // Labels sit on the gray sheet — only interactive chrome gets a white fill.
+  canvasDrawString(kPad + 8, g.titleY, "Quick settings", true, kTitle);
 
-  // Brightness
-  canvasDrawString(kPad + 8, y, "Frontlight", true, kBody);
-  y += 28;
+  drawSectionRule(g.frontRuleY, g.panelX, g.panelW);
+  canvasDrawString(kPad + 8, g.frontLabelY, "Frontlight", true, kBody);
 
   const bool hasLight = boardHasFrontlight();
   const int bright = boardBrightness();
   const bool lightOn = boardFrontlightOn();
 
-  drawOutlineBtn(kPad + 8, y, kStepBtn, kStepBtn, "-");
-  drawOutlineBtn(kScreenW - kPad - 8 - kStepBtn, y, kStepBtn, kStepBtn, "+");
+  drawChromeOutlineBtn(kPad + 8, g.sliderY, kStepBtn, kStepBtn, "-");
+  drawChromeOutlineBtn(kScreenW - kPad - 8 - kStepBtn, g.sliderY, kStepBtn, kStepBtn, "+");
 
   gBrightX = kPad + 8 + kStepBtn + 12;
-  gBrightY = y + 8;
+  gBrightY = g.sliderY + 8;
   gBrightW = kScreenW - 2 * (kPad + 8 + kStepBtn + 12);
   gBrightH = kStepBtn - 16;
+  canvasFillRoundRect(gBrightX, gBrightY, gBrightW, gBrightH, 8, false);
   canvasDrawRoundRect(gBrightX, gBrightY, gBrightW, gBrightH, 8, true);
   if (hasLight && lightOn && bright > 0) {
     const int fill = std::max(4, (gBrightW * bright) / 100);
@@ -440,44 +567,130 @@ void uiDrawShade(const FlashSpace& space) {
 
   char pct[16];
   snprintf(pct, sizeof(pct), hasLight ? "%d%%" : "n/a", bright);
-  canvasDrawString(gBrightX + gBrightW / 2 - canvasTextWidth(pct, kBody) / 2, y + kStepBtn + 6, pct,
-                   true, kBody);
-  y += kStepBtn + 36;
+  canvasDrawString(kPad + 8, g.lightY + (44 - canvasTextHeight(kBody)) / 2, pct, true, kBody);
 
   if (hasLight) {
-    if (lightOn) drawFilledBtn(kPad + 8, y, 140, 44, "Light on");
-    else drawOutlineBtn(kPad + 8, y, 140, 44, "Light off");
+    const int bx = kScreenW - kPad - 8 - 140;
+    if (lightOn) drawFilledBtn(bx, g.lightY, 140, 44, "Light on");
+    else drawChromeOutlineBtn(bx, g.lightY, 140, 44, "Light off");
   }
-  y += 60;
 
-  // Clock
-  canvasDrawString(kPad + 8, y, "Time", true, kBody);
-  y += 28;
+  drawSectionRule(g.clockRuleY, g.panelX, g.panelW);
+  canvasDrawString(kPad + 8, g.clockLabelY, "Time", true, kBody);
   const BoardClockInfo clock = boardClock();
+  if (clock.valid) {
+    canvasDrawString(kScreenW - kPad - 8 - canvasTextWidth(clock.date, kSmall), g.clockLabelY, clock.date,
+                     true, kSmall);
+  }
+
   char timeBuf[16];
   snprintf(timeBuf, sizeof(timeBuf), "%s", clock.valid ? clock.time : "--:--");
-  canvasDrawString(kScreenW / 2 - canvasTextWidth(timeBuf, 2) / 2, y, timeBuf, true, 2);
-  y += 40;
+  canvasDrawString(kScreenW / 2 - canvasTextWidth(timeBuf, 2) / 2, g.timeValueY, timeBuf, true, 2);
 
-  // Hour row
-  canvasDrawString(kPad + 8, y + 12, "Hour", true, kSmall);
-  drawOutlineBtn(kScreenW / 2 - 60 - kStepBtn, y, kStepBtn, kStepBtn, "-");
-  drawOutlineBtn(kScreenW / 2 + 60, y, kStepBtn, kStepBtn, "+");
-  y += kStepBtn + 16;
+  drawChromeOutlineBtn(g.hourMinusX, g.clockRowY, kStepBtn, kStepBtn, "-");
+  drawChromeOutlineBtn(g.hourPlusX, g.clockRowY, kStepBtn, kStepBtn, "+");
+  canvasDrawString(g.hourMinusX + kStepBtn + (52 - canvasTextWidth("Hour", kSmall)) / 2,
+                   g.clockRowY + (kStepBtn - canvasTextHeight(kSmall)) / 2, "Hour", true, kSmall);
 
-  // Minute row
-  canvasDrawString(kPad + 8, y + 12, "Min", true, kSmall);
-  drawOutlineBtn(kScreenW / 2 - 60 - kStepBtn, y, kStepBtn, kStepBtn, "-");
-  drawOutlineBtn(kScreenW / 2 + 60, y, kStepBtn, kStepBtn, "+");
-  y += kStepBtn + 28;
+  drawChromeOutlineBtn(g.minMinusX, g.clockRowY, kStepBtn, kStepBtn, "-");
+  drawChromeOutlineBtn(g.minPlusX, g.clockRowY, kStepBtn, kStepBtn, "+");
+  canvasDrawString(g.minMinusX + kStepBtn + (52 - canvasTextWidth("Min", kSmall)) / 2,
+                   g.clockRowY + (kStepBtn - canvasTextHeight(kSmall)) / 2, "Min", true, kSmall);
 
-  if (clock.valid) {
-    canvasDrawString(kPad + 8, y, clock.date, true, kSmall);
-    y += 28;
+  drawSectionRule(g.refreshRuleY, g.panelX, g.panelW);
+  canvasDrawString(kPad + 8, g.refreshLabelY, "Display refresh", true, kBody);
+
+  canvasDrawString(kPad + 8, g.cleanRowY + (kStepBtn - canvasTextHeight(kBody)) / 2, "Clean every", true,
+                   kBody);
+  drawChromeOutlineBtn(g.cleanMinusX, g.cleanRowY, kStepBtn, kStepBtn, "-");
+  drawChromeOutlineBtn(g.cleanPlusX, g.cleanRowY, kStepBtn, kStepBtn, "+");
+  char every[12];
+  snprintf(every, sizeof(every), "%d", boardCleanEvery());
+  const int everyX = g.cleanMinusX + kStepBtn + (56 - canvasTextWidth(every, kBody)) / 2;
+  canvasDrawString(everyX, g.cleanRowY + (kStepBtn - canvasTextHeight(kBody)) / 2, every, true, kBody);
+
+  drawChromeOutlineBtn(kPad + 8, g.scrubY, kScreenW - 2 * kPad - 16, 44, "Scrub screen now");
+  drawChromeOutlineBtn(kPad + 8, g.aboutY, kScreenW - 2 * kPad - 16, 44, "About");
+
+  canvasFillRoundRect(kScreenW / 2 - 32, g.grabY + (kShadeGrabH - 6) / 2, 64, 6, 3, true);
+  present();
+}
+
+UiHit uiHitShade(int x, int y) {
+  UiHit hit;
+  const ShadeGeom g = shadeGeom();
+  const int panelBottom = g.panelY + g.panelH;
+
+  if (y >= g.grabY || y >= panelBottom || y < g.panelY) {
+    hit.kind = UiHit::Kind::CloseShade;
+    return hit;
   }
 
-  drawFilledBtn(kPad + 8, kScreenH - kPad - 56, kScreenW - 2 * kPad - 16, 48, "Done");
-  present();
+  if (y >= g.sliderY && y < g.sliderY + kStepBtn) {
+    if (x >= kPad + 8 && x < kPad + 8 + kStepBtn) {
+      hit.kind = UiHit::Kind::BrightnessMinus;
+      return hit;
+    }
+    if (x >= kScreenW - kPad - 8 - kStepBtn && x < kScreenW - kPad - 8) {
+      hit.kind = UiHit::Kind::BrightnessPlus;
+      return hit;
+    }
+    if (x >= gBrightX && x < gBrightX + gBrightW) {
+      hit.kind = UiHit::Kind::BrightnessSlider;
+      hit.value = uiBrightnessFromTouchX(x);
+      return hit;
+    }
+  }
+
+  if (boardHasFrontlight() && y >= g.lightY && y < g.lightY + 44) {
+    const int bx = kScreenW - kPad - 8 - 140;
+    if (x >= bx && x < bx + 140) {
+      hit.kind = UiHit::Kind::LightToggle;
+      return hit;
+    }
+  }
+
+  if (y >= g.clockRowY && y < g.clockRowY + kStepBtn) {
+    if (x >= g.hourMinusX && x < g.hourMinusX + kStepBtn) {
+      hit.kind = UiHit::Kind::HourMinus;
+      return hit;
+    }
+    if (x >= g.hourPlusX && x < g.hourPlusX + kStepBtn) {
+      hit.kind = UiHit::Kind::HourPlus;
+      return hit;
+    }
+    if (x >= g.minMinusX && x < g.minMinusX + kStepBtn) {
+      hit.kind = UiHit::Kind::MinuteMinus;
+      return hit;
+    }
+    if (x >= g.minPlusX && x < g.minPlusX + kStepBtn) {
+      hit.kind = UiHit::Kind::MinutePlus;
+      return hit;
+    }
+  }
+
+  if (y >= g.cleanRowY && y < g.cleanRowY + kStepBtn) {
+    if (x >= g.cleanMinusX && x < g.cleanMinusX + kStepBtn) {
+      hit.kind = UiHit::Kind::CleanEveryMinus;
+      return hit;
+    }
+    if (x >= g.cleanPlusX && x < g.cleanPlusX + kStepBtn) {
+      hit.kind = UiHit::Kind::CleanEveryPlus;
+      return hit;
+    }
+  }
+
+  if (y >= g.scrubY && y < g.scrubY + 44 && x >= kPad + 8 && x < kScreenW - kPad - 8) {
+    hit.kind = UiHit::Kind::ScrubNow;
+    return hit;
+  }
+
+  if (y >= g.aboutY && y < g.aboutY + 44 && x >= kPad + 8 && x < kScreenW - kPad - 8) {
+    hit.kind = UiHit::Kind::Settings;
+    return hit;
+  }
+
+  return hit;
 }
 
 void uiDrawSettings(const FlashSpace& space) {
@@ -487,26 +700,42 @@ void uiDrawSettings(const FlashSpace& space) {
   canvasDrawString(kPad, y, "About", true, kTitle);
   y += 36;
   char line[64];
-  snprintf(line, sizeof(line), "Version %s", BASILAUNCHER_VERSION);
+  snprintf(line, sizeof(line), "Basilauncher  v%s", BASILAUNCHER_VERSION);
   canvasDrawString(kPad, y, line, true, kBody);
-  y += 28;
-  canvasDrawString(kPad, y, "Swipe down from the top for", true, kBody);
+  y += 32;
+  canvasDrawString(kPad, y, "Protected factory hub for", true, kBody);
   y += 22;
-  canvasDrawString(kPad, y, "brightness and clock.", true, kBody);
-  y += 28;
-  canvasDrawString(kPad, y, "Launcher flash is protected.", true, kBody);
+  canvasDrawString(kPad, y, "guest apps in slots A-D.", true, kBody);
+  y += 32;
+  canvasDrawString(kPad, y, "Install from an empty slot.", true, kBody);
   y += 22;
-  canvasDrawString(kPad, y, "Power off only sleeps.", true, kBody);
+  canvasDrawString(kPad, y, "Swipe down for quick settings.", true, kBody);
+  y += 32;
+  canvasDrawString(kPad, y, "Hold BOOT to sleep or wake.", true, kBody);
   y += 22;
   canvasDrawString(kPad, y, "Double-press RST in any app", true, kBody);
   y += 22;
   canvasDrawString(kPad, y, "to return to the launcher.", true, kBody);
-  y += 40;
+  y += 32;
+  canvasDrawString(kPad, y, "Power off only sleeps.", true, kBody);
+  y += 36;
+
+  canvasDrawString(kPad, y + 12, "Auto-sleep", true, kBody);
+  constexpr int step = 44;
+  drawOutlineBtn(kScreenW - kPad - step * 2 - 72, y, step, step, "-");
+  drawOutlineBtn(kScreenW - kPad - step, y, step, step, "+");
+  char sleepTxt[16];
+  if (boardSleepAfterMin() <= 0) snprintf(sleepTxt, sizeof(sleepTxt), "off");
+  else snprintf(sleepTxt, sizeof(sleepTxt), "%dm", boardSleepAfterMin());
+  const int sx =
+      kScreenW - kPad - step * 2 - 72 + step + (72 - step - canvasTextWidth(sleepTxt, kBody)) / 2;
+  canvasDrawString(sx, y + 12, sleepTxt, true, kBody);
+  y += step + 24;
 
   drawOutlineBtn(kPad, y, kScreenW - 2 * kPad, 48, "Sleep / power off");
   y += 64;
   drawFilledBtn(kPad, y, kScreenW - 2 * kPad, 48, "Back");
-  present();
+  presentClean();
 }
 
 void uiDrawProgress(const char* title, int percent) {
@@ -534,7 +763,7 @@ void uiDrawMessage(const char* title, const char* body) {
   canvasDrawString(kPad, kStatusH + 28, title ? title : "Notice", true, kTitle);
   drawWrappedBody(body, kStatusH + 70);
   drawFilledBtn(kPad, kScreenH - kDockH - 70, kScreenW - 2 * kPad, 48, "OK");
-  present();
+  presentClean();
 }
 
 UiHit uiHitHome(int x, int y) {
@@ -544,38 +773,17 @@ UiHit uiHitHome(int x, int y) {
     return hit;
   }
 
-  const int dockY = kScreenH - kDockH;
-  const int tileW = (kScreenW - 3 * kPad) / 2;
-  if (y >= dockY + 10 && y < dockY + kDockH - 10) {
-    if (x >= kPad && x < kPad + tileW) {
-      hit.kind = UiHit::Kind::Settings;
-      return hit;
-    }
-    if (x >= kPad * 2 + tileW && x < kPad * 2 + tileW * 2) {
-      hit.kind = UiHit::Kind::OpenPicker;
-      return hit;
-    }
-  }
-
   const int cardW = kScreenW - 2 * kPad;
   for (int i = 0; i < kSlotCount; ++i) {
     const int cy = slotCardY(i);
     const int h = slotCardH();
     if (y < cy || y >= cy + h) continue;
     const int by = cy + h - kBtnH - 14;
-    if (y >= by && y < by + kBtnH) {
-      const int bootX = kPad + cardW - kBtnW - 14;
-      const int clearX = kPad + cardW - 2 * kBtnW - 28;
-      if (x >= bootX && x < bootX + kBtnW) {
-        hit.kind = UiHit::Kind::BootSlot;
-        hit.index = i;
-        return hit;
-      }
-      if (x >= clearX && x < clearX + kBtnW) {
-        hit.kind = UiHit::Kind::ClearSlot;
-        hit.index = i;
-        return hit;
-      }
+    const int btnX = kPad + cardW - kBtnW - 14;
+    if (y >= by && y < by + kBtnH && x >= btnX && x < btnX + kBtnW) {
+      hit.kind = appsSlotInfo(i).occupied ? UiHit::Kind::ClearSlot : UiHit::Kind::BootSlot;
+      hit.index = i;
+      return hit;
     }
     if (x >= kPad && x < kPad + cardW) {
       hit.kind = UiHit::Kind::BootSlot;
@@ -586,77 +794,29 @@ UiHit uiHitHome(int x, int y) {
   return hit;
 }
 
-UiHit uiHitShade(int x, int y) {
-  UiHit hit;
-  const int panelY = kStatusH + 8;
-  int yy = panelY + kShadeGrabH + 40 + 28;  // after "Frontlight" label
-
-  // - brightness
-  if (y >= yy && y < yy + kStepBtn) {
-    if (x >= kPad + 8 && x < kPad + 8 + kStepBtn) {
-      hit.kind = UiHit::Kind::BrightnessMinus;
-      return hit;
-    }
-    if (x >= kScreenW - kPad - 8 - kStepBtn && x < kScreenW - kPad - 8) {
-      hit.kind = UiHit::Kind::BrightnessPlus;
-      return hit;
-    }
-    if (x >= gBrightX && x < gBrightX + gBrightW) {
-      hit.kind = UiHit::Kind::BrightnessSlider;
-      hit.value = uiBrightnessFromTouchX(x);
-      return hit;
-    }
-  }
-  yy += kStepBtn + 36;
-
-  // light toggle
-  if (boardHasFrontlight() && y >= yy && y < yy + 44 && x >= kPad + 8 && x < kPad + 148) {
-    hit.kind = UiHit::Kind::LightToggle;
-    return hit;
-  }
-  yy += 60 + 28;  // Time label
-  yy += 40;       // big time display
-
-  // Hour -/+
-  if (y >= yy && y < yy + kStepBtn) {
-    if (x >= kScreenW / 2 - 60 - kStepBtn && x < kScreenW / 2 - 60) {
-      hit.kind = UiHit::Kind::HourMinus;
-      return hit;
-    }
-    if (x >= kScreenW / 2 + 60 && x < kScreenW / 2 + 60 + kStepBtn) {
-      hit.kind = UiHit::Kind::HourPlus;
-      return hit;
-    }
-  }
-  yy += kStepBtn + 16;
-
-  // Minute -/+
-  if (y >= yy && y < yy + kStepBtn) {
-    if (x >= kScreenW / 2 - 60 - kStepBtn && x < kScreenW / 2 - 60) {
-      hit.kind = UiHit::Kind::MinuteMinus;
-      return hit;
-    }
-    if (x >= kScreenW / 2 + 60 && x < kScreenW / 2 + 60 + kStepBtn) {
-      hit.kind = UiHit::Kind::MinutePlus;
-      return hit;
-    }
-  }
-
-  if (y >= kScreenH - kPad - 56 && y < kScreenH - kPad - 8) {
-    hit.kind = UiHit::Kind::CloseShade;
-    return hit;
-  }
-  return hit;
-}
-
 UiHit uiHitSettings(int x, int y) {
   UiHit hit;
-  int yPower = kStatusH + kPad * 2 + 36 + 28 + 22 + 22 + 28 + 22 + 22 + 40;
-  if (y >= yPower && y < yPower + 48 && x >= kPad && x < kScreenW - kPad) {
+  // Layout must match uiDrawSettings (includes BOOT sleep tip line).
+  int yCursor = kStatusH + kPad * 2 + 36 + 32 + 22 + 22 + 32 + 22 + 32 + 22 + 22 + 32 + 36;
+  constexpr int step = 44;
+  if (y >= yCursor && y < yCursor + step) {
+    const int minusX = kScreenW - kPad - step * 2 - 72;
+    const int plusX = kScreenW - kPad - step;
+    if (x >= minusX && x < minusX + step) {
+      hit.kind = UiHit::Kind::SleepAfterMinus;
+      return hit;
+    }
+    if (x >= plusX && x < plusX + step) {
+      hit.kind = UiHit::Kind::SleepAfterPlus;
+      return hit;
+    }
+  }
+  yCursor += step + 24;
+  if (y >= yCursor && y < yCursor + 48 && x >= kPad && x < kScreenW - kPad) {
     hit.kind = UiHit::Kind::PowerOff;
     return hit;
   }
-  if (y >= yPower + 64 && y < yPower + 112 && x >= kPad && x < kScreenW - kPad) {
+  if (y >= yCursor + 64 && y < yCursor + 112 && x >= kPad && x < kScreenW - kPad) {
     hit.kind = UiHit::Kind::Back;
     return hit;
   }
