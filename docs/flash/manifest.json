@@ -7,22 +7,10 @@
     {
       "chipFamily": "ESP32-S3",
       "parts": [
-        {
-          "path": "https://raw.githubusercontent.com/nikbasi/basilauncher/main/docs/flash/basil-bootloader.bin",
-          "offset": 0
-        },
-        {
-          "path": "https://raw.githubusercontent.com/nikbasi/basilauncher/main/docs/flash/partitions.bin",
-          "offset": 32768
-        },
-        {
-          "path": "https://raw.githubusercontent.com/nikbasi/basilauncher/main/docs/flash/otadata-erased.bin",
-          "offset": 57344
-        },
-        {
-          "path": "https://raw.githubusercontent.com/nikbasi/basilauncher/main/docs/flash/firmware-factory.bin",
-          "offset": 65536
-        }
+        { "path": "./basil-bootloader.bin", "offset": 0 },
+        { "path": "./partitions.bin", "offset": 32768 },
+        { "path": "./otadata-erased.bin", "offset": 57344 },
+        { "path": "./firmware-factory.bin", "offset": 65536 }
       ]
     }
   ]

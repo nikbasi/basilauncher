@@ -5,12 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Flash Basilauncher — LilyGO T5 E-Paper S3 Pro</title>
   <meta name="description" content="Install Basilauncher on a LilyGO T5 E-Paper S3 Pro from your browser." />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
   <style>
     :root {
       --ink: #1a1a1a;
       --paper: #f4f1ea;
       --line: #c8c2b6;
       --accent: #2c5f4a;
+      --bad: #8a2b2b;
     }
     * { box-sizing: border-box; }
     body {
@@ -41,7 +43,6 @@
       margin-bottom: 1.25rem;
     }
     .card h2 {
-      font-size: 1.05rem;
       margin: 0 0 0.65rem;
       font-family: ui-sans-serif, system-ui, sans-serif;
       font-weight: 650;
@@ -64,7 +65,19 @@
       --esp-tools-button-background: var(--accent);
       --esp-tools-button-border-radius: 8px;
     }
+    esp-web-install-button[data-ready="0"] {
+      opacity: 0.45;
+      pointer-events: none;
+    }
     .hint { font-size: 0.92rem; color: #555; margin-top: 0.85rem; }
+    #preload-status {
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      font-size: 0.88rem;
+      margin: 0.35rem 0 0.75rem;
+      color: #555;
+    }
+    #preload-status[data-state="error"] { color: var(--bad); }
+    #preload-status[data-state="ready"] { color: var(--accent); }
     code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 0.86em;
@@ -73,10 +86,19 @@
       border-radius: 4px;
     }
     a { color: var(--accent); }
-    .unsupported { display: none; color: #8a2b2b; }
+    .unsupported { display: none; color: var(--bad); }
     footer { margin-top: 2rem; font-size: 0.9rem; color: #666; }
+    button.retry {
+      font: inherit;
+      font-size: 0.9rem;
+      padding: 0.45rem 0.9rem;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #fff;
+      cursor: pointer;
+    }
   </style>
-  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+  <script type="module" src="./ewt/install-button.js"></script>
 </head>
 <body>
   <main>
@@ -94,13 +116,15 @@
 
     <div class="card">
       <h2>Install</h2>
-      <p>Writes bootloader, partition table, cleared otadata, and factory hub (same layout as a USB first install). Firmware bits are fetched from GitHub raw URLs (no Pages gzip), which previously broke the download in some browsers.</p>
+      <p>Writes bootloader, partition table, cleared otadata, and factory hub (same layout as a USB first install).</p>
+      <p id="preload-status" data-state="loading">Loading firmware…</p>
       <div class="flash-row">
-        <esp-web-install-button manifest="./manifest.json">
+        <esp-web-install-button id="install-btn" data-ready="0">
           <button slot="activate">Connect &amp; flash</button>
           <span slot="unsupported" class="unsupported">Web Serial is not supported in this browser. Use Chrome/Edge, or flash with esptool from the <a href="https://github.com/nikbasi/basilauncher/releases">Releases</a> page.</span>
           <span slot="not-allowed">Permission to use the serial port was denied.</span>
         </esp-web-install-button>
+        <button type="button" class="retry" id="retry-btn" hidden>Retry download</button>
       </div>
       <p class="hint">Pick the port labeled like <code>USB JTAG/serial</code> or <code>Espressif</code>. First install only — for later hub updates prefer the smaller factory image via USB tools so guest apps stay intact.</p>
     </div>
@@ -121,5 +145,96 @@ esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000</code></pre>
       <a href="https://github.com/nikbasi/basilauncher/blob/main/docs/flashing.md">Flashing docs</a>
     </footer>
   </main>
+
+  <script type="module">
+    // Same-origin parts. Preload into blob: URLs so esp-web-tools never
+    // re-fetches over the network (avoids Pages gzip / CDN / CORS traps).
+    const PARTS = [
+      { file: "basil-bootloader.bin", offset: 0, expect: 20624 },
+      { file: "partitions.bin", offset: 32768, expect: 3072 },
+      { file: "otadata-erased.bin", offset: 57344, expect: 8192 },
+      { file: "firmware-factory.bin", offset: 65536, expect: 587904 },
+    ];
+    const VERSION = "1.4.23";
+    const CACHE_BUST = "20261001c";
+
+    const statusEl = document.getElementById("preload-status");
+    const btn = document.getElementById("install-btn");
+    const retryBtn = document.getElementById("retry-btn");
+    const blobUrls = [];
+
+    function setStatus(state, text) {
+      statusEl.dataset.state = state;
+      statusEl.textContent = text;
+    }
+
+    async function fetchPart(part) {
+      const url = new URL(`./${part.file}?v=${CACHE_BUST}`, location.href).toString();
+      let lastErr;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const resp = await fetch(url, { cache: "no-store" });
+          if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${part.file}`);
+          const buf = await resp.arrayBuffer();
+          if (buf.byteLength !== part.expect) {
+            throw new Error(`${part.file}: got ${buf.byteLength} bytes, expected ${part.expect}`);
+          }
+          return buf;
+        } catch (err) {
+          lastErr = err;
+          setStatus("loading", `Retrying ${part.file} (${attempt}/3)…`);
+          await new Promise((r) => setTimeout(r, 250 * attempt));
+        }
+      }
+      throw lastErr;
+    }
+
+    async function prepareManifest() {
+      setStatus("loading", "Loading firmware…");
+      btn.dataset.ready = "0";
+      retryBtn.hidden = true;
+      while (blobUrls.length) {
+        URL.revokeObjectURL(blobUrls.pop());
+      }
+
+      const parts = [];
+      let loaded = 0;
+      for (const part of PARTS) {
+        setStatus("loading", `Loading ${part.file} (${loaded + 1}/${PARTS.length})…`);
+        const buf = await fetchPart(part);
+        const blob = new Blob([buf], { type: "application/octet-stream" });
+        const blobUrl = URL.createObjectURL(blob);
+        blobUrls.push(blobUrl);
+        parts.push({ path: blobUrl, offset: part.offset });
+        loaded += 1;
+      }
+
+      const manifest = {
+        name: "Basilauncher",
+        version: VERSION,
+        new_install_prompt_erase: false,
+        new_install_improv_wait_time: 0,
+        builds: [{ chipFamily: "ESP32-S3", parts }],
+      };
+      const manifestBlob = new Blob([JSON.stringify(manifest)], { type: "application/json" });
+      const manifestUrl = URL.createObjectURL(manifestBlob);
+      blobUrls.push(manifestUrl);
+      btn.manifest = manifestUrl;
+      btn.dataset.ready = "1";
+      setStatus("ready", `Firmware ready (${VERSION}, ${(PARTS.reduce((a, p) => a + p.expect, 0) / 1024).toFixed(0)} KB).`);
+    }
+
+    retryBtn.addEventListener("click", () => {
+      prepareManifest().catch((err) => {
+        setStatus("error", `Download failed: ${err.message || err}`);
+        retryBtn.hidden = false;
+      });
+    });
+
+    prepareManifest().catch((err) => {
+      setStatus("error", `Download failed: ${err.message || err}`);
+      retryBtn.hidden = false;
+    });
+  </script>
 </body>
 </html>
