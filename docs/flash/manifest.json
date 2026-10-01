@@ -1,0 +1,17 @@
+{
+  "name": "Basilauncher",
+  "version": "1.4.23",
+  "new_install_prompt_erase": false,
+  "new_install_improv_wait_time": 0,
+  "builds": [
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "https://github.com/nikbasi/basilauncher/releases/download/v1.4.23/basilauncher-1.4.23-full.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

@@ -17,21 +17,26 @@ If Basilauncher is useful on your T5 Pro, a GitHub star helps others find it.
 
 Pre-built images: **[Releases](https://github.com/nikbasi/basilauncher/releases)** (latest: [v1.4.23](https://github.com/nikbasi/basilauncher/releases/tag/v1.4.23)).
 
+**Easiest install:** open the **[web flasher](https://nikbasi.github.io/basilauncher/flash/)** (Chrome/Edge), plug in the T5 Pro, click **Connect & flash**.
+
 | Asset | Offset | When |
 |-------|--------|------|
-| **`basilauncher-*-full.bin`** | **`0x0`** | **Easiest first install — one file** |
+| **`basilauncher-*-full.bin`** | **`0x0`** | **First install — one file** (also what the web flasher uses) |
 | `basilauncher-*-t5pro.bin` | `0x10000` | Everyday hub update (guests untouched) |
 | `basil-bootloader.bin` | `0x0` | Bootloader-only refresh |
 | `basilauncher-*-partitions.bin` | `0x8000` | Partition table only |
 
-**First install (one file):**
+**First install via esptool (one file):**
 
 ```bash
 esptool.py --chip esp32s3 -p PORT write-flash 0x0 basilauncher-1.4.23-full.bin
+# Optional but fine — full image already contains erased otadata (0xFF @ 0xe000):
 esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000
 ```
 
-Full recipes: **[docs/flashing.md](docs/flashing.md)**.
+`erase-region 0xe000 0x2000` clears the OTA boot pointer so the device starts Basilauncher (factory) instead of a leftover guest.
+
+Full recipes: **[docs/flashing.md](docs/flashing.md)** · **[Web flasher](https://nikbasi.github.io/basilauncher/flash/)**.
 
 ## Hardware
 

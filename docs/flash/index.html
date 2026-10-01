@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Flash Basilauncher — LilyGO T5 E-Paper S3 Pro</title>
+  <meta name="description" content="Install Basilauncher on a LilyGO T5 E-Paper S3 Pro from your browser." />
+  <style>
+    :root {
+      --ink: #1a1a1a;
+      --paper: #f4f1ea;
+      --line: #c8c2b6;
+      --accent: #2c5f4a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+      background: radial-gradient(1200px 600px at 20% -10%, #fff 0%, var(--paper) 55%, #e8e2d6 100%);
+      color: var(--ink);
+      min-height: 100vh;
+      line-height: 1.45;
+    }
+    main {
+      max-width: 36rem;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin: 0 0 0.35rem;
+    }
+    .sub { color: #555; margin: 0 0 1.75rem; font-size: 1.05rem; }
+    .card {
+      background: rgba(255,255,255,0.72);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1.25rem 1.35rem;
+      margin-bottom: 1.25rem;
+    }
+    .card h2 {
+      font-size: 1.05rem;
+      margin: 0 0 0.65rem;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      font-weight: 650;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      font-size: 0.78rem;
+      color: #666;
+    }
+    ol { margin: 0; padding-left: 1.2rem; }
+    li { margin: 0.35rem 0; }
+    .flash-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      align-items: center;
+      margin-top: 0.5rem;
+    }
+    esp-web-install-button {
+      --esp-tools-button-color: #fff;
+      --esp-tools-button-background: var(--accent);
+      --esp-tools-button-border-radius: 8px;
+    }
+    .hint { font-size: 0.92rem; color: #555; margin-top: 0.85rem; }
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.86em;
+      background: #efeae0;
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+    }
+    a { color: var(--accent); }
+    .unsupported { display: none; color: #8a2b2b; }
+    footer { margin-top: 2rem; font-size: 0.9rem; color: #666; }
+  </style>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+</head>
+<body>
+  <main>
+    <h1>Flash Basilauncher</h1>
+    <p class="sub">LilyGO T5 E-Paper S3 Pro — one-click install from Chrome or Edge.</p>
+
+    <div class="card">
+      <h2>Before you start</h2>
+      <ol>
+        <li>Use <strong>Chrome</strong> or <strong>Edge</strong> on desktop (Web Serial).</li>
+        <li>Plug the T5 Pro in with a <strong>data-capable</strong> USB cable.</li>
+        <li>Close other serial monitors / PlatformIO monitors.</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h2>Install</h2>
+      <p>Writes the <strong>full image</strong> (custom bootloader + partitions + hub) at <code>0x0</code>. Otadata is cleared inside that image so the device boots Basilauncher.</p>
+      <div class="flash-row">
+        <esp-web-install-button manifest="./manifest.json">
+          <button slot="activate">Connect &amp; flash</button>
+          <span slot="unsupported" class="unsupported">Web Serial is not supported in this browser. Use Chrome/Edge, or flash with esptool from the <a href="https://github.com/nikbasi/basilauncher/releases">Releases</a> page.</span>
+          <span slot="not-allowed">Permission to use the serial port was denied.</span>
+        </esp-web-install-button>
+      </div>
+      <p class="hint">Pick the port labeled like <code>USB JTAG/serial</code> or <code>Espressif</code>. First install only — for later hub updates prefer the smaller factory image via USB tools so guest apps stay intact.</p>
+    </div>
+
+    <div class="card">
+      <h2>Manual (esptool)</h2>
+      <p>Same result as the button:</p>
+      <pre style="white-space:pre-wrap;font-size:0.85rem;background:#efeae0;padding:0.85rem;border-radius:8px;overflow:auto"><code>esptool.py --chip esp32s3 -p PORT write-flash 0x0 basilauncher-*-full.bin
+esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000</code></pre>
+      <p class="hint">The erase step is optional if you flashed the full image (it already contains erased otadata), but harmless and recommended after a three-file flash.</p>
+    </div>
+
+    <footer>
+      <a href="https://github.com/nikbasi/basilauncher">GitHub</a>
+      ·
+      <a href="https://github.com/nikbasi/basilauncher/releases">Releases</a>
+      ·
+      <a href="https://github.com/nikbasi/basilauncher/blob/main/docs/flashing.md">Flashing docs</a>
+    </footer>
+  </main>
+</body>
+</html>
