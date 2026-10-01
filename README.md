@@ -25,6 +25,8 @@ Pre-built images: **[Releases](https://github.com/nikbasi/basilauncher/releases)
 
 Full recipes: **[docs/flashing.md](docs/flashing.md)**.
 
+## Hardware
+
 | | |
 |---|---|
 | **Board** | LilyGO T5 E-Paper S3 Pro (`T5-ePaper-S3-Pro`, ESP32-S3 + 8 MB PSRAM) |
@@ -45,6 +47,16 @@ Also searchable as: *LilyGO T5 S3 Pro*, *T5 epaper S3 Pro*, *ESP32-S3 e-ink laun
 - **Sleep screensaver** — random BMPs from `/sleep` or `/.sleep`, short BOOT to change, hold BOOT to wake
 - **Clock + battery** — RTC time, charge lightning / USB plug cues
 - **1 MB `spiffs`** — so Meshtastic-style guests can mount InternalFS
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/images/home.jpg" alt="Basilauncher home — four guest slots" width="280" />
+  &nbsp;
+  <img src="docs/images/sleep.jpg" alt="Basilauncher sleep screensaver" width="280" />
+</p>
+
+<p align="center"><em>Home / Apps (left) · Sleep screensaver (right)</em></p>
 
 ## Quick start
 
@@ -91,25 +103,6 @@ Double-press **RST** from any guest to get back here.
 
 Tap a file in **Files** → installs into the **smallest empty slot that fits**.
 Clear a slot from the home cards when you need space.
-
-## UI sketch
-
-```
-┌─────────────────────────────┐
-│  12:34  Apr 1        ⚡ 87% │
-│  Basilauncher  v1.4.20      │
-│           ⌄  pill           │  ← pull for Quick settings
-├─────────────────────────────┤
-│  Apps                       │
-│  ┌ A CrossPoint        ▶  ┐ │
-│  ├ B Meshtastic        ▶  ┤ │
-│  ├ C (empty)  Assign      ┤ │
-│  └ D Flashcards        ▶  ┘ │
-│  [ Files ]      free 4.1 MB │
-└─────────────────────────────┘
-```
-
-Photos welcome in `docs/images/` — PRs appreciated.
 
 ## Build notes
 
