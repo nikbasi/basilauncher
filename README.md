@@ -13,7 +13,17 @@ install guest firmwares from the SD card into flash slots, and comes back when y
 
 If Basilauncher is useful on your T5 Pro, a GitHub star helps others find it.
 
-## Hardware
+## Download
+
+Pre-built images: **[Releases](https://github.com/nikbasi/basilauncher/releases)** (latest: [v1.4.20](https://github.com/nikbasi/basilauncher/releases/tag/v1.4.20)).
+
+| Asset | Offset | When |
+|-------|--------|------|
+| `basilauncher-*-t5pro.bin` | `0x10000` | Everyday hub update |
+| `basil-bootloader.bin` | `0x0` | First flash / bootloader refresh |
+| `basilauncher-*-partitions.bin` | `0x8000` | First flash / partition map change |
+
+Full recipes: **[docs/flashing.md](docs/flashing.md)**.
 
 | | |
 |---|---|
