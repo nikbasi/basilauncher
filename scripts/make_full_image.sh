@@ -26,6 +26,11 @@ python3 -m esptool --chip esp32s3 merge-bin \
 
 # Convenience copy without version in the name
 cp -f "$OUT" "$OUT_DIR/basilauncher-full.bin"
+FLASH_COPY="$ROOT/docs/flash/basilauncher-full.bin"
+if [[ -d "$ROOT/docs/flash" ]]; then
+  cp -f "$OUT" "$FLASH_COPY"
+  echo "Updated $FLASH_COPY for web flasher"
+fi
 ls -la "$OUT" "$OUT_DIR/basilauncher-full.bin"
 echo "Flash: esptool.py --chip esp32s3 -p PORT write-flash 0x0 $OUT"
 echo "Then:  esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000"

@@ -8,7 +8,7 @@
       "chipFamily": "ESP32-S3",
       "parts": [
         {
-          "path": "https://github.com/nikbasi/basilauncher/releases/download/v1.4.23/basilauncher-1.4.23-full.bin",
+          "path": "./basilauncher-full.bin",
           "offset": 0
         }
       ]
