@@ -125,20 +125,6 @@ bool wokeFromBootButton() {
 
 }  // namespace
 
-// Overlay battery (snapshot at sleep entry). No clock: the panel stays in deep
-// sleep until BOOT, so a painted time would freeze and look wrong. Waking every
-// minute to refresh would cost e-ink + CPU energy for little gain on a static art
-// screen — keep sleep as a true deep-sleep wallpaper.
-void drawSleepStatusChip() {
-  const BoardPowerInfo power = boardPower();
-  if (!power.known) return;
-  char line[32];
-  if (power.charging) snprintf(line, sizeof(line), "%d%% charging", power.percent);
-  else if (power.plugged) snprintf(line, sizeof(line), "%d%% USB", power.percent);
-  else snprintf(line, sizeof(line), "%d%%", power.percent);
-  drawSleepBanner(line, /*top=*/true, /*scale=*/2);
-}
-
 void enterSleepWithScreensaver(bool quiet) {
   if (!quiet) {
     // Large top toast so the sleep transition is obvious.
@@ -150,7 +136,6 @@ void enterSleepWithScreensaver(bool quiet) {
   if (!pickAndDrawRandom()) {
     canvasClear();
   }
-  drawSleepStatusChip();
   drawSleepBanner("Press BOOT to wake", /*top=*/false, /*scale=*/1);
   canvasPresent(EInkDisplay::FULL_REFRESH);
   delay(200);

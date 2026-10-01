@@ -6,6 +6,38 @@
 #include <cstdlib>
 #include <cstring>
 
+namespace {
+
+// Floyd–Steinberg error diffusion so photos keep midtones on 1-bpp e-ink.
+// Two row buffers of (copyW+2) ints — ~4 KB at 540 px, freed before return.
+bool ditherRowToCanvas(const uint8_t* row, int copyW, int srcX0, int dstX0, int dy, int* cur,
+                       int* nxt) {
+  memset(nxt, 0, static_cast<size_t>(copyW + 2) * sizeof(int));
+  for (int sx = 0; sx < copyW; ++sx) {
+    const uint8_t* px = row + (srcX0 + sx) * 3;
+    // BMP is BGR
+    int lum = (static_cast<int>(px[2]) * 30 + static_cast<int>(px[1]) * 59 +
+               static_cast<int>(px[0]) * 11) /
+              100;
+    lum += cur[sx + 1];
+    if (lum < 0) lum = 0;
+    if (lum > 255) lum = 255;
+    const bool black = lum < 128;
+    const int out = black ? 0 : 255;
+    const int err = lum - out;
+    canvasSetPixel(dstX0 + sx, dy, black);
+    // Diffuse:      * 7/16 right
+    //         3/16 5/16 1/16 below
+    cur[sx + 2] += (err * 7) / 16;
+    nxt[sx] += (err * 3) / 16;
+    nxt[sx + 1] += (err * 5) / 16;
+    nxt[sx + 2] += (err * 1) / 16;
+  }
+  return true;
+}
+
+}  // namespace
+
 bool bmpDrawFile(const char* path) {
   File f = SD.open(path, FILE_READ);
   if (!f) return false;
@@ -56,30 +88,53 @@ bool bmpDrawFile(const char* path) {
   const int dstY0 = hAbs < kScreenH ? (kScreenH - hAbs) / 2 : 0;
   const int copyH = hAbs < kScreenH ? hAbs : kScreenH;
 
+  // +2 sentinel slots so left/right neighbors stay in-bounds.
+  auto* errA = static_cast<int*>(calloc(static_cast<size_t>(copyW + 2), sizeof(int)));
+  auto* errB = static_cast<int*>(calloc(static_cast<size_t>(copyW + 2), sizeof(int)));
+  if (!errA || !errB) {
+    free(row);
+    free(errA);
+    free(errB);
+    f.close();
+    return false;
+  }
+
+  int* cur = errA;
+  int* nxt = errB;
   for (int sy = 0; sy < hAbs; ++sy) {
     const int fileRow = bottomUp ? (hAbs - 1 - sy) : sy;
     if (!f.seek(dataOff + static_cast<uint32_t>(fileRow) * static_cast<uint32_t>(rowBytes))) {
       free(row);
+      free(errA);
+      free(errB);
       f.close();
       return false;
     }
     if (f.read(row, rowBytes) != rowBytes) {
       free(row);
+      free(errA);
+      free(errB);
       f.close();
       return false;
     }
-    if (sy < srcY0 || sy >= srcY0 + copyH) continue;
-    const int dy = dstY0 + (sy - srcY0);
-    for (int sx = 0; sx < copyW; ++sx) {
-      const int srcX = srcX0 + sx;
-      const uint8_t* px = row + srcX * 3;
-      const int lum =
-          (static_cast<int>(px[2]) * 30 + static_cast<int>(px[1]) * 59 + static_cast<int>(px[0]) * 11) /
-          100;
-      canvasSetPixel(dstX0 + sx, dy, lum < 128);
+    if (sy < srcY0 || sy >= srcY0 + copyH) {
+      // Still advance diffusion state? Skip rows outside crop — reset errors so
+      // crop edges don't smear. Clear both buffers when skipping.
+      memset(cur, 0, static_cast<size_t>(copyW + 2) * sizeof(int));
+      memset(nxt, 0, static_cast<size_t>(copyW + 2) * sizeof(int));
+      continue;
     }
+    const int dy = dstY0 + (sy - srcY0);
+    ditherRowToCanvas(row, copyW, srcX0, dstX0, dy, cur, nxt);
+    int* tmp = cur;
+    cur = nxt;
+    nxt = tmp;
+    memset(nxt, 0, static_cast<size_t>(copyW + 2) * sizeof(int));
   }
+
   free(row);
+  free(errA);
+  free(errB);
   f.close();
   return true;
 }
