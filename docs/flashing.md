@@ -13,10 +13,34 @@ pio run -e basilauncher -t upload
 This writes firmware to **`0x10000`** and erases otadata (`0xe000`) so the next
 boot lands on Basilauncher. Bootloader and partition table are **not** rewritten.
 
-## First install / partition map change
+## First install — one file (easiest)
 
-When the board is blank, or you changed [`partitions.csv`](../partitions.csv),
-flash bootloader + table + factory once:
+From [Releases](https://github.com/nikbasi/basilauncher/releases), download
+`basilauncher-*-full.bin` (custom bootloader + partition table + factory app
+merged). Flash it at offset **0**, then clear otadata:
+
+```bash
+PORT=/dev/cu.usbmodem101   # Windows: COMx
+
+esptool.py --chip esp32s3 -p "$PORT" write-flash 0x0 basilauncher-1.4.23-full.bin
+esptool.py --chip esp32s3 -p "$PORT" erase-region 0xe000 0x2000
+```
+
+Rebuild a full image after `pio run`:
+
+```bash
+./scripts/make_full_image.sh
+# → .pio/build/basilauncher/basilauncher-<ver>-full.bin
+```
+
+This overwrites the bootloader and partition table. Guest slots that already
+exist are left alone if their offsets still match; on a blank board it is the
+recommended path.
+
+## First install / partition map change (three files)
+
+When you prefer separate binaries (or changed [`partitions.csv`](../partitions.csv)
+and want an explicit table rewrite):
 
 ```bash
 pio run -e basilauncher   # produce .pio/build/basilauncher/*

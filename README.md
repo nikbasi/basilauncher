@@ -19,9 +19,17 @@ Pre-built images: **[Releases](https://github.com/nikbasi/basilauncher/releases)
 
 | Asset | Offset | When |
 |-------|--------|------|
-| `basilauncher-*-t5pro.bin` | `0x10000` | Everyday hub update |
-| `basil-bootloader.bin` | `0x0` | First flash / bootloader refresh |
-| `basilauncher-*-partitions.bin` | `0x8000` | First flash / partition map change |
+| **`basilauncher-*-full.bin`** | **`0x0`** | **Easiest first install — one file** |
+| `basilauncher-*-t5pro.bin` | `0x10000` | Everyday hub update (guests untouched) |
+| `basil-bootloader.bin` | `0x0` | Bootloader-only refresh |
+| `basilauncher-*-partitions.bin` | `0x8000` | Partition table only |
+
+**First install (one file):**
+
+```bash
+esptool.py --chip esp32s3 -p PORT write-flash 0x0 basilauncher-1.4.23-full.bin
+esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000
+```
 
 Full recipes: **[docs/flashing.md](docs/flashing.md)**.
 
