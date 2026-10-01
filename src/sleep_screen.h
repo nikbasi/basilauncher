@@ -3,11 +3,10 @@
 #include <stdint.h>
 
 // Draw a random BMP from /sleep or /.sleep (same folders Aurora uses), then
-// deep-sleep. Falls back to a plain "Sleeping" screen if none are found.
-// quiet=true skips the "Entering sleep..." toast (used when a short BOOT
-// click woke us and we immediately go back to sleep).
+// deep-sleep. Falls back to a plain white frame if none are found.
+// quiet=true skips the "Entering sleep..." toast (used on debounce re-sleep).
 void enterSleepWithScreensaver(bool quiet = false);
 
-// Hardware wakes on any BOOT edge; call early in setup() so only a hold
-// keeps the device awake. Short click → quiet re-sleep (does not return).
+// Call early in setup(). BOOT wakes from deep sleep; a brief press stays awake
+// (USB glitches that only pulse GPIO0 are filtered and re-sleep quietly).
 void sleepRequireBootHoldToWake(uint32_t needMs = 1500);

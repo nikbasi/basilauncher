@@ -27,21 +27,89 @@ constexpr int kBadge = 52;
 constexpr int kActionBtnH = 52;  // full-width actions (Light / Scrub / About / Sleep)
 
 // Shade layout — compact sheet under the status bar, not full-page.
-constexpr int kShadeGrabH = 28;
+constexpr int kGrabPillW = 64;
+constexpr int kGrabPillH = 6;
+constexpr int kGrabCueH = 22;  // chevron + pill (same on status bar and shade)
+constexpr int kShadeGrabH = kGrabCueH + 6;
 constexpr int kShadeRadius = 18;
 constexpr int kStepBtn = 52;  // +/- steppers — large enough for finger taps
 int gBrightX = 0, gBrightY = 0, gBrightW = 0, gBrightH = 0;
 int gShadePanelBottom = 0;
 
 int statusBarH() {
-  // Time row, brand row, optional grabber cue — scales with UI text size.
+  // Time row, brand row, grabber cue — scales with UI text size.
   const int topPad = 8;
   const int timeH = canvasTextHeight(2);
   const int brandH = canvasTextHeight(kBody);
   const int gap = 6;
-  const int grabSlot = 10;
   const int botPad = 8;
-  return topPad + timeH + gap + brandH + gap + grabSlot + botPad;
+  return topPad + timeH + gap + brandH + gap + kGrabCueH + botPad;
+}
+
+void drawChevronUp(int cx, int cy) {
+  // Tip at smaller y (screen up). Thick strokes for e-ink.
+  for (int t = 0; t < 3; ++t) {
+    canvasDrawLine(cx - 12 + t, cy + 8, cx, cy + t, true);
+    canvasDrawLine(cx + 12 - t, cy + 8, cx, cy + t, true);
+  }
+}
+
+void drawChevronDown(int cx, int cy) {
+  for (int t = 0; t < 3; ++t) {
+    canvasDrawLine(cx - 12 + t, cy, cx, cy + 8 - t, true);
+    canvasDrawLine(cx + 12 - t, cy, cx, cy + 8 - t, true);
+  }
+}
+
+// Shared pull handle — same pill size both states.
+// Closed: down cue (pull the sheet down). Open: up cue (push it away).
+void drawShadeGrabCue(int topY, bool menuOpen) {
+  const int cx = kScreenW / 2;
+  const int pillX = cx - kGrabPillW / 2;
+  if (menuOpen) {
+    drawChevronUp(cx, topY);
+    canvasFillRoundRect(pillX, topY + 10, kGrabPillW, kGrabPillH, kGrabPillH / 2, true);
+  } else {
+    canvasFillRoundRect(pillX, topY, kGrabPillW, kGrabPillH, kGrabPillH / 2, true);
+    drawChevronDown(cx, topY + kGrabPillH + 3);
+  }
+}
+
+void drawLightningBolt(int ox, int oy) {
+  // Crisp geometric bolt (scanline-filled polygon). Vertices clockwise from tip.
+  static constexpr int8_t kVx[] = {9, 4, 7, 1, 11, 8, 14};
+  static constexpr int8_t kVy[] = {0, 9, 9, 20, 11, 11, 0};
+  constexpr int kN = 7;
+  constexpr int kH = 20;
+  for (int y = 0; y <= kH; ++y) {
+    int xs[kN];
+    int n = 0;
+    for (int i = 0; i < kN; ++i) {
+      const int x0 = kVx[i];
+      const int y0 = kVy[i];
+      const int x1 = kVx[(i + 1) % kN];
+      const int y1 = kVy[(i + 1) % kN];
+      if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
+        xs[n++] = x0 + (x1 - x0) * (y - y0) / (y1 - y0);
+      }
+    }
+    if (n < 2) continue;
+    // Insertion sort — n is tiny.
+    for (int a = 1; a < n; ++a) {
+      const int v = xs[a];
+      int b = a;
+      while (b > 0 && xs[b - 1] > v) {
+        xs[b] = xs[b - 1];
+        --b;
+      }
+      xs[b] = v;
+    }
+    canvasFillRect(ox + xs[0], oy + y, xs[n - 1] - xs[0] + 1, 1, true);
+  }
+  // Outline edges so the zig-zag reads clearly on FAST refreshes.
+  for (int i = 0; i < kN; ++i) {
+    canvasDrawLine(ox + kVx[i], oy + kVy[i], ox + kVx[(i + 1) % kN], oy + kVy[(i + 1) % kN], true);
+  }
 }
 
 struct ShadeGeom {
@@ -193,19 +261,20 @@ void truncate(char* s, size_t maxChars) {
   s[maxChars] = 0;
 }
 
-void drawBatteryGlyph(int x, int y, int percent, bool charging) {
+void drawBatteryGlyph(int x, int y, int percent, bool charging, bool plugged) {
   canvasDrawRect(x, y, 28, 14, true);
   canvasFillRect(x + 28, y + 4, 3, 6, true);
   const int fillW = std::max(0, std::min(24, (24 * percent) / 100));
   if (fillW > 0) canvasFillRect(x + 2, y + 2, fillW, 10, true);
-  if (charging) {
-    canvasDrawLine(x + 12, y - 2, x + 10, y + 7, true);
-    canvasDrawLine(x + 10, y + 7, x + 14, y + 7, true);
-    canvasDrawLine(x + 14, y + 7, x + 12, y + 16, true);
+  if (plugged && !charging) {
+    // USB present but not charging (e.g. full): small plug tips above the cell
+    canvasFillRect(x + 10, y - 4, 8, 3, true);
+    canvasDrawLine(x + 12, y - 4, x + 12, y - 1, true);
+    canvasDrawLine(x + 16, y - 4, x + 16, y - 1, true);
   }
 }
 
-void drawStatusBar(const FlashSpace& space, bool shadeHint) {
+void drawStatusBar(const FlashSpace& space, bool showClosedGrabber) {
   const int barH = statusBarH();
   canvasFillRect(0, 0, kScreenW, barH, false);
   const BoardClockInfo clock = boardClock();
@@ -220,14 +289,18 @@ void drawStatusBar(const FlashSpace& space, bool shadeHint) {
     canvasDrawString(kPad + timeW + 14, dateY, clock.date, true, kBody);
   }
 
-  char batt[16];
+  char batt[20];
   if (power.known) {
-    snprintf(batt, sizeof(batt), "%d%%", power.percent);
+    if (power.charging) snprintf(batt, sizeof(batt), "%d%%", power.percent);
+    else if (power.plugged) snprintf(batt, sizeof(batt), "%d%% USB", power.percent);
+    else snprintf(batt, sizeof(batt), "%d%%", power.percent);
     const int tw = canvasTextWidth(batt, kBody);
-    const int bx = kScreenW - kPad - tw - 36;
+    const int boltW = power.charging ? 18 : 0;
+    const int bx = kScreenW - kPad - tw - 36 - boltW;
     const int battY = timeY + (timeH - 14) / 2;
-    drawBatteryGlyph(bx, battY, power.percent, power.charging);
-    canvasDrawString(bx + 34, timeY + (timeH - canvasTextHeight(kBody)) / 2, batt, true, kBody);
+    if (power.charging) drawLightningBolt(bx, battY - 3);
+    drawBatteryGlyph(bx + boltW, battY, power.percent, power.charging, power.plugged);
+    canvasDrawString(bx + boltW + 34, timeY + (timeH - canvasTextHeight(kBody)) / 2, batt, true, kBody);
   } else {
     const char* na = "batt --";
     canvasDrawString(kScreenW - kPad - canvasTextWidth(na, kBody),
@@ -239,9 +312,10 @@ void drawStatusBar(const FlashSpace& space, bool shadeHint) {
   snprintf(brand, sizeof(brand), "Basilauncher  v%s", BASILAUNCHER_VERSION);
   canvasDrawString(kPad, brandY, brand, true, kBody);
 
-  if (shadeHint) {
+  // Closed menu: up cue only. Open shade draws its own down cue instead.
+  if (showClosedGrabber) {
     const int grabY = brandY + canvasTextHeight(kBody) + 4;
-    canvasFillRoundRect(kScreenW / 2 - 28, grabY, 56, 5, 2, true);
+    drawShadeGrabCue(grabY, /*menuOpen=*/false);
   }
   canvasDrawLine(0, barH - 1, kScreenW - 1, barH - 1, true);
 }
@@ -662,7 +736,7 @@ void explorerSheetCell(int index, int& x, int& y, int& w, int& h) {
 void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawState& st,
                     const FlashSpace& space) {
   canvasClear();
-  drawStatusBar(space, false);
+  drawStatusBar(space, true);
 
   char title[48];
   if (st.mode == ExplorerMode::Install) {
@@ -820,6 +894,11 @@ UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool
                     bool clipboardHas) {
   UiHit hit;
 
+  if (!sheetOpen && y < statusBarH()) {
+    hit.kind = UiHit::Kind::OpenShade;
+    return hit;
+  }
+
   if (sheetOpen) {
     const int sheetH = explorerSheetH();
     const int sheetY = kScreenH - sheetH;
@@ -942,8 +1021,9 @@ void uiDrawShade(const FlashSpace& space) {
   drawChromeOutlineBtn(kPad + 8, g.scrubY, kScreenW - 2 * kPad - 16, kActionBtnH, "Scrub screen now");
   drawChromeOutlineBtn(kPad + 8, g.settingsY, kScreenW - 2 * kPad - 16, kActionBtnH, "Settings");
 
-  canvasFillRoundRect(kScreenW / 2 - 36, g.grabY + (kShadeGrabH - 7) / 2, 72, 7, 3, true);
-  present();
+  // Open menu: down cue only (same pill size as the closed status-bar cue).
+  drawShadeGrabCue(g.grabY + 2, /*menuOpen=*/true);
+  presentClean();
 }
 
 UiHit uiHitShade(int x, int y) {
@@ -1013,7 +1093,7 @@ const char* monthName(int month) {
 
 void uiDrawSettings(const FlashSpace& space) {
   canvasClear();
-  drawStatusBar(space, false);
+  drawStatusBar(space, true);
   const SettingsGeom g = settingsGeom();
   constexpr int step = kStepBtn;
 
@@ -1068,6 +1148,10 @@ void uiDrawSettings(const FlashSpace& space) {
 
 UiHit uiHitSettings(int x, int y) {
   UiHit hit;
+  if (y < statusBarH()) {
+    hit.kind = UiHit::Kind::OpenShade;
+    return hit;
+  }
   const SettingsGeom g = settingsGeom();
   constexpr int step = kStepBtn;
   const int minusX = g.rowMinusX;
@@ -1187,87 +1271,432 @@ UiHit uiHitImageView(int x, int y) {
 
 namespace {
 
-constexpr int kOskKeyH = 46;
-constexpr int kOskGap = 4;
-constexpr int kOskKeyRows = 4;  // number / qwerty / asdf / zxcv
-constexpr int kOskBarH = 48;    // Cancel / Done above keyboard
+// Phone-style QWERTY: 3 letter rows + bottom bar. Fat keys, small side margins.
+constexpr int kOskSide = 6;
+constexpr int kOskGap = 6;
+constexpr int kOskKeyH = 58;
+constexpr int kOskRows = 4;
+constexpr int kOskBarH = 46;  // Cancel / Done above keyboard
+constexpr int kOskBot = 10;
+constexpr int kOskRadius = 10;
 
-const char* oskRowLetters(int row, bool shift) {
-  static const char* lower[] = {"1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm"};
-  static const char* upper[] = {"1234567890", "QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
-  if (row < 0 || row > 3) return "";
-  return shift ? upper[row] : lower[row];
+int oskUsable() { return kScreenW - 2 * kOskSide; }
+
+int oskUnitW() {
+  // 10 equal letter columns across the row.
+  return (oskUsable() - 9 * kOskGap) / 10;
 }
 
-const char* oskRowSymbols(int row) {
-  static const char* sym[] = {"1234567890", "-/:;()$&@\"", ".,?!'#%*", "+=_\\|"};
-  if (row < 0 || row > 3) return "";
-  return sym[row];
-}
-
-// Keyboard block: 4 key rows + 1 modifier row.
 int oskTopY() {
-  return kScreenH - ((kOskKeyRows + 1) * (kOskKeyH + kOskGap) + 10);
+  return kScreenH - (kOskRows * kOskKeyH + (kOskRows - 1) * kOskGap + kOskBot);
 }
 
 int oskActionBarY() { return oskTopY() - kOskBarH - 8; }
 
-void drawOskKey(int x, int y, int w, int h, const char* label) {
-  canvasDrawRoundRect(x, y, w, h, 8, true);
-  const int tw = canvasTextWidth(label, kBody);
-  const int th = canvasTextHeight(kBody);
-  canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, true, kBody);
-}
+int oskRowY(int row) { return oskTopY() + row * (kOskKeyH + kOskGap); }
 
-void drawOskRow(int row, bool symbols, bool shift, int usable) {
-  const char* keys = symbols ? oskRowSymbols(row) : oskRowLetters(row, shift);
-  const int n = static_cast<int>(strlen(keys));
-  if (n <= 0) return;
-  // Keep key width based on a full 10-key row so short rows (zxcvbnm) are centered.
-  const int keyW = (usable - 9 * kOskGap) / 10;
-  const int rowW = n * keyW + (n - 1) * kOskGap;
-  const int startX = kPad + (usable - rowW) / 2;
-  const int rowY = oskTopY() + row * (kOskKeyH + kOskGap);
-  for (int col = 0; col < n; ++col) {
-    char lab[2] = {keys[col], 0};
-    drawOskKey(startX + col * (keyW + kOskGap), rowY, keyW, kOskKeyH, lab);
+void drawOskKey(int x, int y, int w, int h, const char* label, bool inverted = false) {
+  if (w <= 0 || h <= 0) return;
+  if (inverted) {
+    canvasFillRoundRect(x, y, w, h, kOskRadius, true);
+    const int tw = canvasTextWidth(label, kBody);
+    const int th = canvasTextHeight(kBody);
+    canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, false, kBody);
+  } else {
+    canvasDrawRoundRect(x, y, w, h, kOskRadius, true);
+    const int tw = canvasTextWidth(label, kBody);
+    const int th = canvasTextHeight(kBody);
+    canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, true, kBody);
   }
 }
 
-bool hitOskRow(int x, int y, int row, bool symbols, bool shift, int usable, UiHit& hit) {
-  const char* keys = symbols ? oskRowSymbols(row) : oskRowLetters(row, shift);
-  const int n = static_cast<int>(strlen(keys));
-  if (n <= 0) return false;
-  const int keyW = (usable - 9 * kOskGap) / 10;
-  const int rowW = n * keyW + (n - 1) * kOskGap;
-  const int startX = kPad + (usable - rowW) / 2;
-  const int rowY = oskTopY() + row * (kOskKeyH + kOskGap);
-  if (y < rowY || y >= rowY + kOskKeyH) return false;
-  for (int col = 0; col < n; ++col) {
-    const int kx = startX + col * (keyW + kOskGap);
-    if (x >= kx && x < kx + keyW) {
-      hit.kind = UiHit::Kind::KeyChar;
-      hit.value = static_cast<unsigned char>(keys[col]);
-      return true;
+// Custom icons — font is ASCII-only, so shift/backspace are drawn.
+void drawOskShiftKey(int x, int y, int w, int h, bool active) {
+  if (w <= 0 || h <= 0) return;
+  if (active) canvasFillRoundRect(x, y, w, h, kOskRadius, true);
+  else canvasDrawRoundRect(x, y, w, h, kOskRadius, true);
+  const bool ink = !active;
+  const int cx = x + w / 2;
+  const int cy = y + h / 2;
+  // Hollow up-arrow (⇧): chevron + stem.
+  const int tipY = cy - 14;
+  const int wing = 11;
+  const int midY = cy - 2;
+  canvasDrawLine(cx, tipY, cx - wing, midY, ink);
+  canvasDrawLine(cx, tipY, cx + wing, midY, ink);
+  canvasDrawLine(cx - wing, midY, cx - 5, midY, ink);
+  canvasDrawLine(cx + wing, midY, cx + 5, midY, ink);
+  canvasDrawLine(cx - 5, midY, cx - 5, cy + 12, ink);
+  canvasDrawLine(cx + 5, midY, cx + 5, cy + 12, ink);
+  canvasDrawLine(cx - 5, cy + 12, cx + 5, cy + 12, ink);
+  // Thicken the chevron a pixel.
+  canvasDrawLine(cx, tipY + 1, cx - wing + 1, midY, ink);
+  canvasDrawLine(cx, tipY + 1, cx + wing - 1, midY, ink);
+}
+
+void drawOskBackspaceKey(int x, int y, int w, int h) {
+  if (w <= 0 || h <= 0) return;
+  canvasDrawRoundRect(x, y, w, h, kOskRadius, true);
+  const int cx = x + w / 2;
+  const int cy = y + h / 2;
+  // ⌫: left arrowhead + body rectangle with an X.
+  const int bodyW = 22;
+  const int bodyH = 18;
+  const int bodyX = cx - 4;
+  const int bodyY = cy - bodyH / 2;
+  const int tipX = bodyX - 14;
+  canvasDrawLine(tipX, cy, bodyX, bodyY, true);
+  canvasDrawLine(tipX, cy, bodyX, bodyY + bodyH - 1, true);
+  canvasDrawLine(bodyX, bodyY, bodyX + bodyW - 1, bodyY, true);
+  canvasDrawLine(bodyX, bodyY + bodyH - 1, bodyX + bodyW - 1, bodyY + bodyH - 1, true);
+  canvasDrawLine(bodyX + bodyW - 1, bodyY, bodyX + bodyW - 1, bodyY + bodyH - 1, true);
+  const int ix0 = bodyX + 6;
+  const int ix1 = bodyX + bodyW - 7;
+  const int iy0 = bodyY + 5;
+  const int iy1 = bodyY + bodyH - 6;
+  canvasDrawLine(ix0, iy0, ix1, iy1, true);
+  canvasDrawLine(ix1, iy0, ix0, iy1, true);
+  canvasDrawLine(ix0, iy0 + 1, ix1, iy1 + 1, true);
+  canvasDrawLine(ix1, iy0 + 1, ix0, iy1 + 1, true);
+}
+
+// Letter / symbol glyph rows (not including shift/del/space chrome).
+const char* oskLetterRow(int row, bool shift) {
+  static const char* lower[] = {"qwertyuiop", "asdfghjkl", "zxcvbnm"};
+  static const char* upper[] = {"QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
+  if (row < 0 || row > 2) return "";
+  return shift ? upper[row] : lower[row];
+}
+
+const char* oskSymbolRow(int row) {
+  // Android-ish first symbols page.
+  static const char* sym[] = {"1234567890", "-/:;()$&@\"", ".,?!'#%"};
+  if (row < 0 || row > 2) return "";
+  return sym[row];
+}
+
+int oskWideW() {
+  // Shift / delete / 123 — about 1.5 letter keys.
+  return oskUnitW() + (oskUnitW() + kOskGap) / 2;
+}
+
+void drawOskLetters(bool shift) {
+  const int unit = oskUnitW();
+  const int usable = oskUsable();
+  const int side = kOskSide;
+
+  // Row 0: 10 keys
+  {
+    const char* keys = oskLetterRow(0, shift);
+    const int n = 10;
+    const int rowW = n * unit + (n - 1) * kOskGap;
+    const int startX = side + (usable - rowW) / 2;
+    const int y = oskRowY(0);
+    for (int i = 0; i < n; ++i) {
+      char lab[2] = {keys[i], 0};
+      drawOskKey(startX + i * (unit + kOskGap), y, unit, kOskKeyH, lab);
+    }
+  }
+
+  // Row 1: 9 keys, centered (half-key inset like iOS/Android)
+  {
+    const char* keys = oskLetterRow(1, shift);
+    const int n = 9;
+    const int rowW = n * unit + (n - 1) * kOskGap;
+    const int startX = side + (usable - rowW) / 2;
+    const int y = oskRowY(1);
+    for (int i = 0; i < n; ++i) {
+      char lab[2] = {keys[i], 0};
+      drawOskKey(startX + i * (unit + kOskGap), y, unit, kOskKeyH, lab);
+    }
+  }
+
+  // Row 2: shift + 7 letters + delete
+  {
+    const char* keys = oskLetterRow(2, shift);
+    const int n = 7;
+    const int wide = oskWideW();
+    const int midW = n * unit + (n - 1) * kOskGap;
+    const int rowW = wide + kOskGap + midW + kOskGap + wide;
+    const int startX = side + (usable - rowW) / 2;
+    const int y = oskRowY(2);
+    drawOskShiftKey(startX, y, wide, kOskKeyH, shift);
+    const int midX = startX + wide + kOskGap;
+    for (int i = 0; i < n; ++i) {
+      char lab[2] = {keys[i], 0};
+      drawOskKey(midX + i * (unit + kOskGap), y, unit, kOskKeyH, lab);
+    }
+    drawOskBackspaceKey(midX + midW + kOskGap, y, wide, kOskKeyH);
+  }
+
+  // Row 3: 123 | , | space | .
+  {
+    const int wide = oskWideW();
+    const int y = oskRowY(3);
+    const int punct = unit;
+    const int startX = side;
+    drawOskKey(startX, y, wide, kOskKeyH, "123");
+    int x = startX + wide + kOskGap;
+    drawOskKey(x, y, punct, kOskKeyH, ",");
+    x += punct + kOskGap;
+    const int endX = side + usable;
+    const int periodW = wide;
+    const int periodX = endX - periodW;
+    const int spaceW = periodX - kOskGap - x;
+    drawOskKey(x, y, spaceW, kOskKeyH, "space");
+    drawOskKey(periodX, y, periodW, kOskKeyH, ".");
+  }
+}
+
+void drawOskSymbols() {
+  const int unit = oskUnitW();
+  const int usable = oskUsable();
+  const int side = kOskSide;
+
+  for (int row = 0; row < 2; ++row) {
+    const char* keys = oskSymbolRow(row);
+    const int n = static_cast<int>(strlen(keys));
+    const int rowW = n * unit + (n - 1) * kOskGap;
+    const int startX = side + (usable - rowW) / 2;
+    const int y = oskRowY(row);
+    for (int i = 0; i < n; ++i) {
+      char lab[2] = {keys[i], 0};
+      drawOskKey(startX + i * (unit + kOskGap), y, unit, kOskKeyH, lab);
+    }
+  }
+
+  // Row 2: shorter symbol strip + delete (wide)
+  {
+    const char* keys = oskSymbolRow(2);
+    const int n = static_cast<int>(strlen(keys));
+    const int wide = oskWideW();
+    const int midW = n * unit + (n - 1) * kOskGap;
+    const int rowW = midW + kOskGap + wide;
+    const int startX = side + (usable - rowW) / 2;
+    const int y = oskRowY(2);
+    for (int i = 0; i < n; ++i) {
+      char lab[2] = {keys[i], 0};
+      drawOskKey(startX + i * (unit + kOskGap), y, unit, kOskKeyH, lab);
+    }
+    drawOskBackspaceKey(startX + midW + kOskGap, y, wide, kOskKeyH);
+  }
+
+  // Row 3: ABC | space | #+= (extra punct via same symbols toggle stays)
+  {
+    const int wide = oskWideW();
+    const int y = oskRowY(3);
+    const int startX = side;
+    drawOskKey(startX, y, wide, kOskKeyH, "ABC");
+    const int endX = side + usable;
+    const int spaceX = startX + wide + kOskGap;
+    const int spaceW = endX - spaceX;
+    drawOskKey(spaceX, y, spaceW, kOskKeyH, "space");
+  }
+}
+
+void drawOsk(bool symbols, bool shift) {
+  if (symbols) drawOskSymbols();
+  else drawOskLetters(shift);
+}
+
+// Hit helpers: gaps are split between neighbors so there are no dead strips.
+bool hitInBand(int x, int y, int kx, int ky, int kw, int kh, int leftSlop, int rightSlop) {
+  return y >= ky && y < ky + kh && x >= kx - leftSlop && x < kx + kw + rightSlop;
+}
+
+bool hitOskLetters(int x, int y, bool shift, UiHit& hit) {
+  const int unit = oskUnitW();
+  const int usable = oskUsable();
+  const int side = kOskSide;
+  const int halfGap = kOskGap / 2;
+
+  // Row 0
+  {
+    const char* keys = oskLetterRow(0, shift);
+    const int n = 10;
+    const int rowW = n * unit + (n - 1) * kOskGap;
+    const int startX = side + (usable - rowW) / 2;
+    const int ry = oskRowY(0);
+    if (y >= ry && y < ry + kOskKeyH) {
+      for (int i = 0; i < n; ++i) {
+        const int kx = startX + i * (unit + kOskGap);
+        const int ls = (i == 0) ? 0 : halfGap;
+        const int rs = (i == n - 1) ? 0 : halfGap;
+        if (hitInBand(x, y, kx, ry, unit, kOskKeyH, ls, rs)) {
+          hit.kind = UiHit::Kind::KeyChar;
+          hit.value = static_cast<unsigned char>(keys[i]);
+          return true;
+        }
+      }
+    }
+  }
+
+  // Row 1
+  {
+    const char* keys = oskLetterRow(1, shift);
+    const int n = 9;
+    const int rowW = n * unit + (n - 1) * kOskGap;
+    const int startX = side + (usable - rowW) / 2;
+    const int ry = oskRowY(1);
+    if (y >= ry && y < ry + kOskKeyH) {
+      for (int i = 0; i < n; ++i) {
+        const int kx = startX + i * (unit + kOskGap);
+        const int ls = (i == 0) ? halfGap : halfGap;
+        const int rs = (i == n - 1) ? halfGap : halfGap;
+        if (hitInBand(x, y, kx, ry, unit, kOskKeyH, ls, rs)) {
+          hit.kind = UiHit::Kind::KeyChar;
+          hit.value = static_cast<unsigned char>(keys[i]);
+          return true;
+        }
+      }
+    }
+  }
+
+  // Row 2: shift + letters + del
+  {
+    const char* keys = oskLetterRow(2, shift);
+    const int n = 7;
+    const int wide = oskWideW();
+    const int midW = n * unit + (n - 1) * kOskGap;
+    const int rowW = wide + kOskGap + midW + kOskGap + wide;
+    const int startX = side + (usable - rowW) / 2;
+    const int ry = oskRowY(2);
+    if (y >= ry && y < ry + kOskKeyH) {
+      if (hitInBand(x, y, startX, ry, wide, kOskKeyH, 0, halfGap)) {
+        hit.kind = UiHit::Kind::KeyShift;
+        return true;
+      }
+      const int midX = startX + wide + kOskGap;
+      for (int i = 0; i < n; ++i) {
+        const int kx = midX + i * (unit + kOskGap);
+        if (hitInBand(x, y, kx, ry, unit, kOskKeyH, halfGap, halfGap)) {
+          hit.kind = UiHit::Kind::KeyChar;
+          hit.value = static_cast<unsigned char>(keys[i]);
+          return true;
+        }
+      }
+      if (hitInBand(x, y, midX + midW + kOskGap, ry, wide, kOskKeyH, halfGap, 0)) {
+        hit.kind = UiHit::Kind::KeyBackspace;
+        return true;
+      }
+    }
+  }
+
+  // Row 3: 123 , space .
+  {
+    const int wide = oskWideW();
+    const int punct = unit;
+    const int ry = oskRowY(3);
+    if (y >= ry && y < ry + kOskKeyH) {
+      const int startX = side;
+      if (hitInBand(x, y, startX, ry, wide, kOskKeyH, 0, halfGap)) {
+        hit.kind = UiHit::Kind::KeySymbols;
+        return true;
+      }
+      const int commaX = startX + wide + kOskGap;
+      if (hitInBand(x, y, commaX, ry, punct, kOskKeyH, halfGap, halfGap)) {
+        hit.kind = UiHit::Kind::KeyChar;
+        hit.value = ',';
+        return true;
+      }
+      const int spaceX = commaX + punct + kOskGap;
+      const int endX = side + usable;
+      const int periodW = wide;
+      const int periodX = endX - periodW;
+      const int spaceW = periodX - kOskGap - spaceX;
+      if (hitInBand(x, y, spaceX, ry, spaceW, kOskKeyH, halfGap, halfGap)) {
+        hit.kind = UiHit::Kind::KeySpace;
+        return true;
+      }
+      if (hitInBand(x, y, periodX, ry, periodW, kOskKeyH, halfGap, 0)) {
+        hit.kind = UiHit::Kind::KeyChar;
+        hit.value = '.';
+        return true;
+      }
     }
   }
   return false;
 }
 
+bool hitOskSymbols(int x, int y, UiHit& hit) {
+  const int unit = oskUnitW();
+  const int usable = oskUsable();
+  const int side = kOskSide;
+  const int halfGap = kOskGap / 2;
+
+  for (int row = 0; row < 2; ++row) {
+    const char* keys = oskSymbolRow(row);
+    const int n = static_cast<int>(strlen(keys));
+    const int rowW = n * unit + (n - 1) * kOskGap;
+    const int startX = side + (usable - rowW) / 2;
+    const int ry = oskRowY(row);
+    if (y < ry || y >= ry + kOskKeyH) continue;
+    for (int i = 0; i < n; ++i) {
+      const int kx = startX + i * (unit + kOskGap);
+      if (hitInBand(x, y, kx, ry, unit, kOskKeyH, halfGap, halfGap)) {
+        hit.kind = UiHit::Kind::KeyChar;
+        hit.value = static_cast<unsigned char>(keys[i]);
+        return true;
+      }
+    }
+  }
+
+  {
+    const char* keys = oskSymbolRow(2);
+    const int n = static_cast<int>(strlen(keys));
+    const int wide = oskWideW();
+    const int midW = n * unit + (n - 1) * kOskGap;
+    const int rowW = midW + kOskGap + wide;
+    const int startX = side + (usable - rowW) / 2;
+    const int ry = oskRowY(2);
+    if (y >= ry && y < ry + kOskKeyH) {
+      for (int i = 0; i < n; ++i) {
+        const int kx = startX + i * (unit + kOskGap);
+        if (hitInBand(x, y, kx, ry, unit, kOskKeyH, halfGap, halfGap)) {
+          hit.kind = UiHit::Kind::KeyChar;
+          hit.value = static_cast<unsigned char>(keys[i]);
+          return true;
+        }
+      }
+      if (hitInBand(x, y, startX + midW + kOskGap, ry, wide, kOskKeyH, halfGap, 0)) {
+        hit.kind = UiHit::Kind::KeyBackspace;
+        return true;
+      }
+    }
+  }
+
+  {
+    const int wide = oskWideW();
+    const int ry = oskRowY(3);
+    if (y >= ry && y < ry + kOskKeyH) {
+      const int startX = side;
+      if (hitInBand(x, y, startX, ry, wide, kOskKeyH, 0, halfGap)) {
+        hit.kind = UiHit::Kind::KeySymbols;
+        return true;
+      }
+      const int spaceX = startX + wide + kOskGap;
+      const int spaceW = side + usable - spaceX;
+      if (hitInBand(x, y, spaceX, ry, spaceW, kOskKeyH, halfGap, 0)) {
+        hit.kind = UiHit::Kind::KeySpace;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool hitOsk(int x, int y, bool symbols, bool shift, UiHit& hit) {
+  if (symbols) return hitOskSymbols(x, y, hit);
+  return hitOskLetters(x, y, shift, hit);
+}
+
 }  // namespace
 
-void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shift, TextEditMode mode) {
-  canvasClear();
-  drawStatusBar(appsFlashSpace(), false);
+namespace {
 
+void drawTextEditField(const char* text, TextEditMode mode) {
   const bool nameMode =
       mode == TextEditMode::Rename || mode == TextEditMode::NewFolder || mode == TextEditMode::NewFile;
-
-  const char* heading = title ? title : "Edit";
-  if (mode == TextEditMode::NewFolder) heading = "New folder";
-  else if (mode == TextEditMode::NewFile) heading = "New file";
-  else if (mode == TextEditMode::Rename) heading = "Rename";
-  canvasDrawString(kPad, statusBarH() + kPad, heading, true, kTitle);
 
   const int actionY = oskActionBarY();
   const int fieldTop = statusBarH() + kPad + 40;
@@ -1280,13 +1709,13 @@ void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shif
         mode == TextEditMode::NewFolder
             ? "Folder name"
             : (mode == TextEditMode::NewFile ? "File name" : "New name");
-    canvasDrawString(kPad, fieldTop, hint, true, kSmall);
-
+    // Clear hint + name box (leave keyboard alone).
     const int boxY = fieldTop + 22;
     const int boxH = 56;
+    canvasFillRect(kPad, fieldTop, kScreenW - 2 * kPad, boxY + boxH + 36 - fieldTop, false);
+    canvasDrawString(kPad, fieldTop, hint, true, kSmall);
     canvasDrawRoundRect(kPad, boxY, kScreenW - 2 * kPad, boxH, 10, true);
 
-    // Single-line name: show end of string if too long, caret after last glyph.
     const int maxCols = std::max(8, (kScreenW - 2 * kPad - 28) / canvasBodyCellW());
     size_t start = 0;
     if (len > static_cast<size_t>(maxCols)) start = len - static_cast<size_t>(maxCols);
@@ -1303,135 +1732,129 @@ void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shif
     } else if (mode == TextEditMode::NewFolder) {
       canvasDrawString(kPad, boxY + boxH + 12, "Then tap Done to create the folder.", true, kSmall);
     }
-  } else {
-    canvasDrawString(kPad, fieldTop - 2, "Content", true, kSmall);
-    const int boxTop = fieldTop + 18;
-    canvasDrawRoundRect(kPad, boxTop, kScreenW - 2 * kPad, fieldBottom - boxTop, 10, true);
+    return;
+  }
 
-    const int maxCols = std::max(8, (kScreenW - 2 * kPad - 24) / canvasBodyCellW());
-    const int lineStep = canvasBodyCellH() + 2;
-    const int maxRows = std::max(1, (fieldBottom - boxTop - 20) / lineStep);
-    size_t start = 0;
-    // Keep caret (end of text) visible.
-    size_t linesNeeded = 1;
-    {
-      size_t col = 0;
-      linesNeeded = 1;
-      for (size_t i = 0; i < len; ++i) {
+  canvasFillRect(kPad, fieldTop - 2, kScreenW - 2 * kPad, fieldBottom - (fieldTop - 2), false);
+  canvasDrawString(kPad, fieldTop - 2, "Content", true, kSmall);
+  const int boxTop = fieldTop + 18;
+  canvasDrawRoundRect(kPad, boxTop, kScreenW - 2 * kPad, fieldBottom - boxTop, 10, true);
+
+  const int maxCols = std::max(8, (kScreenW - 2 * kPad - 24) / canvasBodyCellW());
+  const int lineStep = canvasBodyCellH() + 2;
+  const int maxRows = std::max(1, (fieldBottom - boxTop - 20) / lineStep);
+  size_t start = 0;
+  size_t linesNeeded = 1;
+  {
+    size_t col = 0;
+    linesNeeded = 1;
+    for (size_t i = 0; i < len; ++i) {
+      if (body[i] == '\n' || col >= static_cast<size_t>(maxCols)) {
+        ++linesNeeded;
+        col = 0;
+        if (body[i] == '\n') continue;
+      }
+      ++col;
+    }
+  }
+  if (linesNeeded > static_cast<size_t>(maxRows)) {
+    size_t probe = 0;
+    while (probe < len) {
+      size_t col = 0, rows = 1;
+      for (size_t i = probe; i < len; ++i) {
         if (body[i] == '\n' || col >= static_cast<size_t>(maxCols)) {
-          ++linesNeeded;
+          ++rows;
           col = 0;
           if (body[i] == '\n') continue;
         }
         ++col;
       }
-    }
-    if (linesNeeded > static_cast<size_t>(maxRows)) {
-      // Walk forward until the tail fits in maxRows.
-      size_t probe = 0;
-      while (probe < len) {
-        size_t col = 0, rows = 1;
-        for (size_t i = probe; i < len; ++i) {
-          if (body[i] == '\n' || col >= static_cast<size_t>(maxCols)) {
-            ++rows;
-            col = 0;
-            if (body[i] == '\n') continue;
-          }
-          ++col;
-        }
-        if (rows <= static_cast<size_t>(maxRows)) break;
-        // Advance one visual line from probe.
-        size_t n = 0;
-        while (probe + n < len && n < static_cast<size_t>(maxCols) && body[probe + n] != '\n') ++n;
-        probe += n;
-        if (probe < len && body[probe] == '\n') ++probe;
-        if (n == 0) ++probe;
-      }
-      start = probe;
-    }
-
-    int y = boxTop + 10;
-    size_t pos = start;
-    int caretX = kPad + 12;
-    int caretY = y;
-    for (int r = 0; r < maxRows && pos <= len; ++r) {
-      char line[80];
+      if (rows <= static_cast<size_t>(maxRows)) break;
       size_t n = 0;
-      while (pos + n < len && n < static_cast<size_t>(maxCols) && body[pos + n] != '\n') ++n;
-      memcpy(line, body + pos, n);
-      line[n] = 0;
-      canvasDrawString(kPad + 12, y, line, true, kBody);
-      if (pos + n >= len) {
-        caretX = kPad + 12 + canvasTextWidth(line, kBody);
-        caretY = y;
-      }
-      pos += n;
-      if (pos < len && body[pos] == '\n') ++pos;
-      y += lineStep;
-      if (pos >= len) break;
+      while (probe + n < len && n < static_cast<size_t>(maxCols) && body[probe + n] != '\n') ++n;
+      probe += n;
+      if (probe < len && body[probe] == '\n') ++probe;
+      if (n == 0) ++probe;
     }
-    if (len == 0) {
-      caretX = kPad + 12;
-      caretY = boxTop + 10;
-    }
-    canvasFillRect(caretX + 2, caretY, 2, canvasBodyCellH(), true);
+    start = probe;
   }
 
+  int y = boxTop + 10;
+  size_t pos = start;
+  int caretX = kPad + 12;
+  int caretY = y;
+  for (int r = 0; r < maxRows && pos <= len; ++r) {
+    char line[80];
+    size_t n = 0;
+    while (pos + n < len && n < static_cast<size_t>(maxCols) && body[pos + n] != '\n') ++n;
+    memcpy(line, body + pos, n);
+    line[n] = 0;
+    canvasDrawString(kPad + 12, y, line, true, kBody);
+    if (pos + n >= len) {
+      caretX = kPad + 12 + canvasTextWidth(line, kBody);
+      caretY = y;
+    }
+    pos += n;
+    if (pos < len && body[pos] == '\n') ++pos;
+    y += lineStep;
+    if (pos >= len) break;
+  }
+  if (len == 0) {
+    caretX = kPad + 12;
+    caretY = boxTop + 10;
+  }
+  canvasFillRect(caretX + 2, caretY, 2, canvasBodyCellH(), true);
+}
+
+}  // namespace
+
+void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shift, TextEditMode mode,
+                    bool scrub) {
+  canvasClear();
+  drawStatusBar(appsFlashSpace(), true);
+
+  const char* heading = title ? title : "Edit";
+  if (mode == TextEditMode::NewFolder) heading = "New folder";
+  else if (mode == TextEditMode::NewFile) heading = "New file";
+  else if (mode == TextEditMode::Rename) heading = "Rename";
+  canvasDrawString(kPad, statusBarH() + kPad, heading, true, kTitle);
+
+  drawTextEditField(text, mode);
+
+  const int actionY = oskActionBarY();
   const char* doneLabel = (mode == TextEditMode::EditFile) ? "Save" : "Done";
-  drawOutlineBtn(kPad, actionY, 110, kOskBarH, "Cancel");
-  drawFilledBtn(kScreenW - kPad - 110, actionY, 110, kOskBarH, doneLabel);
+  drawOutlineBtn(kPad, actionY, 120, kOskBarH, "Cancel");
+  drawFilledBtn(kScreenW - kPad - 120, actionY, 120, kOskBarH, doneLabel);
 
-  const int usable = kScreenW - 2 * kPad;
-  for (int row = 0; row < kOskKeyRows; ++row) drawOskRow(row, symbols, shift, usable);
+  drawOsk(symbols, shift);
+  if (scrub) presentClean();
+  else present();
+}
 
-  const int modY = oskTopY() + kOskKeyRows * (kOskKeyH + kOskGap);
-  const int modH = kOskKeyH;
-  drawOskKey(kPad, modY, 70, modH, symbols ? "ABC" : (shift ? "ABC" : "abc"));
-  drawOskKey(kPad + 78, modY, usable - 78 - 78 - 8, modH, "space");
-  drawOskKey(kScreenW - kPad - 70 - 78, modY, 70, modH, "#+=");
-  drawOskKey(kScreenW - kPad - 70, modY, 70, modH, "del");
-  presentClean();
+void uiRedrawTextEditField(const char* text, TextEditMode mode) {
+  drawTextEditField(text, mode);
+  present();
 }
 
 UiHit uiHitTextEdit(int x, int y, bool symbols, bool shift) {
   UiHit hit;
+  if (y < statusBarH()) {
+    hit.kind = UiHit::Kind::OpenShade;
+    return hit;
+  }
   const int actionY = oskActionBarY();
   if (y >= actionY && y < actionY + kOskBarH) {
-    if (x >= kPad && x < kPad + 110) {
+    if (x >= kPad && x < kPad + 120) {
       hit.kind = UiHit::Kind::KeyCancel;
       return hit;
     }
-    if (x >= kScreenW - kPad - 110 && x < kScreenW - kPad) {
+    if (x >= kScreenW - kPad - 120 && x < kScreenW - kPad) {
       hit.kind = UiHit::Kind::KeyDone;
       return hit;
     }
   }
 
-  const int usable = kScreenW - 2 * kPad;
-  for (int row = 0; row < kOskKeyRows; ++row) {
-    if (hitOskRow(x, y, row, symbols, shift, usable, hit)) return hit;
-  }
-
-  const int modY = oskTopY() + kOskKeyRows * (kOskKeyH + kOskGap);
-  const int modH = kOskKeyH;
-  if (y >= modY && y < modY + modH) {
-    if (x >= kPad && x < kPad + 70) {
-      hit.kind = UiHit::Kind::KeyShift;
-      return hit;
-    }
-    if (x >= kPad + 78 && x < kScreenW - kPad - 70 - 78) {
-      hit.kind = UiHit::Kind::KeySpace;
-      return hit;
-    }
-    if (x >= kScreenW - kPad - 70 - 78 && x < kScreenW - kPad - 70) {
-      hit.kind = UiHit::Kind::KeySymbols;
-      return hit;
-    }
-    if (x >= kScreenW - kPad - 70 && x < kScreenW - kPad) {
-      hit.kind = UiHit::Kind::KeyBackspace;
-      return hit;
-    }
-  }
+  if (hitOsk(x, y, symbols, shift, hit)) return hit;
   return hit;
 }
 

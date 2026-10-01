@@ -21,6 +21,7 @@ Rtc gRtc;
 Preferences gPrefs;
 bool gSdOk = false;
 bool gTouchOk = false;
+bool gAsyncInput = false;
 bool gWasDown = false;
 bool gRtcOk = false;
 uint8_t gBrightness = 40;
@@ -73,7 +74,14 @@ bool boardInitDisplay() {
 bool boardInitTouch() {
   gInput.begin();
   gTouchOk = gInput.hasTouch();
-  if (!gTouchOk) Serial.println("GT911 not found");
+  if (!gTouchOk) {
+    Serial.println("GT911 not found");
+  } else {
+    // Queue taps/swipes while e-ink blocking refreshes so typing stays ahead
+    // of the panel. Main loop must drain via pop*, not call update().
+    gInput.beginAsync(/*taskPriority=*/2, /*pollMs=*/12, /*queueLen=*/48);
+    gAsyncInput = true;
+  }
   return gTouchOk;
 }
 
@@ -94,9 +102,21 @@ bool boardInitSd() {
 }
 
 void boardInitPower() {
+  // A prior CrossPoint HIZ session can leave the BQ25896 input disabled so USB
+  // enumerates but never charges — clear that on every hub boot.
+  const bool hizCleared = gBattery.clearChargerInputHiZ();
+  uint8_t reg00 = 0, reg0b = 0;
+  const bool diag = gBattery.readChargerDiag(reg00, reg0b);
   const auto st = gBattery.readStatus();
-  Serial.printf("Battery: supported=%d pct=%u\n", st.supported ? 1 : 0,
-                st.percentageKnown ? st.percentage : 0u);
+  Serial.printf("Battery: supported=%d pct=%u chg=%d plug=%d hiz_ok=%d", st.supported ? 1 : 0,
+                st.percentageKnown ? st.percentage : 0u, (st.chargingKnown && st.charging) ? 1 : 0,
+                (st.externalPowerKnown && st.externalPower) ? 1 : 0, hizCleared ? 1 : 0);
+  if (diag) {
+    Serial.printf(" reg00=%02X reg0b=%02X vbus=%u chrg=%u\n", reg00, reg0b, (reg0b >> 5) & 7u,
+                  (reg0b >> 3) & 3u);
+  } else {
+    Serial.println(" (no charger diag)");
+  }
 }
 
 void boardInitClock() {
@@ -185,6 +205,7 @@ BoardPowerInfo boardPower() {
   info.known = true;
   info.percent = static_cast<int>(st.percentage);
   info.charging = st.chargingKnown && st.charging;
+  info.plugged = (st.externalPowerKnown && st.externalPower) || info.charging;
   return info;
 }
 
@@ -250,7 +271,8 @@ bool boardSdOk() { return gSdOk; }
 bool boardTouchOk() { return gTouchOk; }
 
 void boardInputUpdate() {
-  // Always poll — BOOT/power is a direct GPIO even when touch is absent.
+  // Async task owns update(); main thread only drains queues.
+  if (gAsyncInput) return;
   gInput.update();
 }
 
@@ -261,6 +283,11 @@ unsigned long boardPowerHeldMs() { return gInput.getPowerButtonHeldTime(); }
 bool boardPollTouch(int& x, int& y) {
   if (!gTouchOk) return false;
   float nx = 0, ny = 0;
+  if (gAsyncInput) {
+    if (!gInput.popTouchTap(nx, ny)) return false;
+    canvasTouchToLogical(nx, ny, x, y);
+    return true;
+  }
   if (!gInput.wasTouchTap(nx, ny)) {
     if (gInput.isTouchPressed()) {
       gWasDown = true;
@@ -286,7 +313,11 @@ bool boardPollTouch(int& x, int& y) {
 bool boardPollSwipe(int& x0, int& y0, int& x1, int& y1) {
   if (!gTouchOk) return false;
   float nsx = 0, nsy = 0, nex = 0, ney = 0;
-  if (!gInput.wasSwipe(nsx, nsy, nex, ney) && !gInput.popSwipe(nsx, nsy, nex, ney)) return false;
+  if (gAsyncInput) {
+    if (!gInput.popSwipe(nsx, nsy, nex, ney)) return false;
+  } else if (!gInput.wasSwipe(nsx, nsy, nex, ney) && !gInput.popSwipe(nsx, nsy, nex, ney)) {
+    return false;
+  }
   canvasTouchToLogical(nsx, nsy, x0, y0);
   canvasTouchToLogical(nex, ney, x1, y1);
   return true;

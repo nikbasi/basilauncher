@@ -125,6 +125,31 @@ bool wokeFromBootButton() {
 
 }  // namespace
 
+// Overlay time + battery on the sleep art so the panel isn't a blind screensaver.
+void drawSleepStatusChip() {
+  const BoardClockInfo clock = boardClock();
+  const BoardPowerInfo power = boardPower();
+  char line[48];
+  if (clock.valid && power.known) {
+    if (power.charging) {
+      snprintf(line, sizeof(line), "%s  %d%% charging", clock.time, power.percent);
+    } else if (power.plugged) {
+      snprintf(line, sizeof(line), "%s  %d%% USB", clock.time, power.percent);
+    } else {
+      snprintf(line, sizeof(line), "%s  %d%%", clock.time, power.percent);
+    }
+  } else if (clock.valid) {
+    snprintf(line, sizeof(line), "%s", clock.time);
+  } else if (power.known) {
+    if (power.charging) snprintf(line, sizeof(line), "%d%% charging", power.percent);
+    else if (power.plugged) snprintf(line, sizeof(line), "%d%% USB", power.percent);
+    else snprintf(line, sizeof(line), "%d%%", power.percent);
+  } else {
+    return;
+  }
+  drawSleepBanner(line, /*top=*/true, /*scale=*/2);
+}
+
 void enterSleepWithScreensaver(bool quiet) {
   if (!quiet) {
     // Large top toast so the sleep transition is obvious.
@@ -136,7 +161,8 @@ void enterSleepWithScreensaver(bool quiet) {
   if (!pickAndDrawRandom()) {
     canvasClear();
   }
-  drawSleepBanner("Hold BOOT to wake", /*top=*/false, /*scale=*/1);
+  drawSleepStatusChip();
+  drawSleepBanner("Press BOOT to wake", /*top=*/false, /*scale=*/1);
   canvasPresent(EInkDisplay::FULL_REFRESH);
   delay(200);
 
@@ -146,24 +172,17 @@ void enterSleepWithScreensaver(bool quiet) {
   esp_deep_sleep_start();
 }
 
-void sleepRequireBootHoldToWake(uint32_t needMs) {
+void sleepRequireBootHoldToWake(uint32_t /*needMs*/) {
   if (!wokeFromBootButton()) return;
 
-  // EXT1 wakes on any low; require the same hold as sleep-entry to stay up.
-  const uint32_t start = millis();
-  bool held = false;
-  while (bootPinPressed()) {
-    if (millis() - start >= needMs) {
-      held = true;
-      break;
-    }
-    delay(10);
-  }
-  if (held) {
-    Serial.println("Wake: BOOT held — staying awake");
-    waitBootReleased();
+  // Any real BOOT press wakes and stays up. A tiny debounce filters USB/JTAG
+  // glitches that can pulse GPIO0 without a finger on the button.
+  delay(40);
+  if (!bootPinPressed()) {
+    Serial.println("Wake: BOOT glitch — sleeping again");
+    enterSleepWithScreensaver(/*quiet=*/true);
     return;
   }
-  Serial.println("Wake: short BOOT click — sleeping again");
-  enterSleepWithScreensaver(/*quiet=*/true);
+  Serial.println("Wake: BOOT — staying awake");
+  waitBootReleased();
 }

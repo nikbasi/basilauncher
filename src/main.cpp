@@ -20,6 +20,7 @@
 namespace {
 
 Screen gScreen = Screen::Home;
+Screen gShadeReturn = Screen::Home;
 std::vector<DirEntry> gEntries;
 char gPath[kFilePathMax] = "/";
 char gBrowsePath[kFilePathMax] = "/";
@@ -32,6 +33,9 @@ ExplorerMode gExplorerMode = ExplorerMode::Browse;
 bool gSheetOpen = false;
 uint8_t gLastClockMinute = 255;
 uint32_t gLastActiveMs = 0;
+uint32_t gLastHomeScrubMs = 0;
+uint32_t gTextEditFastMs = 0;
+bool gTextEditIdleScrubPending = false;
 
 char gTextBuf[kTextEditMax];
 size_t gTextLen = 0;
@@ -49,10 +53,9 @@ bool gMessageReturnExplorer = false;
 
 void noteActivity() { gLastActiveMs = millis(); }
 
-void showMessage(const char* title, const char* body, bool returnExplorer) {
-  gMessageReturnExplorer = returnExplorer;
-  gScreen = Screen::Message;
-  uiDrawMessage(title, body);
+void noteTextEditFastPaint() {
+  gTextEditFastMs = millis();
+  gTextEditIdleScrubPending = true;
 }
 
 struct ProgressCtx {
@@ -65,7 +68,39 @@ void refreshSlots() {
   gSpace = appsFlashSpace();
 }
 
+// After a burst of FAST key paints, one HALF of the current frame clears residue
+// without forcing the user to wait between keys.
+void maybeIdleScrubTextEdit() {
+  if (!gTextEditIdleScrubPending || gScreen != Screen::TextEdit) return;
+  if (millis() - gTextEditFastMs < 1800) return;
+  gTextEditIdleScrubPending = false;
+  canvasSetHoldCleanRefresh(false);
+  canvasPresent(EInkDisplay::HALF_REFRESH);
+  canvasSetHoldCleanRefresh(true);
+}
+
+// Soft maintenance scrub while the hub sits idle on Home.
+void maybeIdleScrubHome() {
+  if (gScreen != Screen::Home) return;
+  constexpr uint32_t kIdleMs = 3u * 60u * 1000u;
+  const uint32_t now = millis();
+  if (now - gLastActiveMs < kIdleMs) return;
+  if (now - gLastHomeScrubMs < kIdleMs) return;
+  gLastHomeScrubMs = now;
+  canvasRequestCleanRefresh();
+  refreshSlots();
+  uiDrawHome(gSlots, gSpace);
+}
+
+void showMessage(const char* title, const char* body, bool returnExplorer) {
+  canvasSetHoldCleanRefresh(false);
+  gMessageReturnExplorer = returnExplorer;
+  gScreen = Screen::Message;
+  uiDrawMessage(title, body);
+}
+
 void showHome() {
+  canvasSetHoldCleanRefresh(false);
   gScreen = Screen::Home;
   gAssignSlot = -1;
   gScroll = 0;
@@ -75,6 +110,7 @@ void showHome() {
   uiDrawHome(gSlots, gSpace);
   const BoardClockInfo c = boardClock();
   gLastClockMinute = c.valid ? c.minute : 255;
+  gLastHomeScrubMs = millis();
 }
 
 size_t installMaxBytes() {
@@ -93,6 +129,7 @@ void buildExplorerList() {
 }
 
 void redrawExplorer() {
+  canvasSetHoldCleanRefresh(false);
   ExplorerDrawState st;
   st.mode = gExplorerMode;
   st.targetSlot = gAssignSlot;
@@ -226,9 +263,24 @@ void openImage(const char* path) {
   uiDrawImageViewHint();
 }
 
-void redrawTextEdit() {
+void redrawTextEdit(bool scrub = false) {
   gScreen = Screen::TextEdit;
-  uiDrawTextEdit(gTextTitle, gTextBuf, gOskSymbols, gOskShift, gTextMode);
+  // No periodic HALF while typing — scrub once on open, then FAST only until
+  // idle / exit (maybeIdleScrubTextEdit).
+  canvasSetHoldCleanRefresh(true);
+  uiDrawTextEdit(gTextTitle, gTextBuf, gOskSymbols, gOskShift, gTextMode, scrub);
+  if (scrub) {
+    gTextEditIdleScrubPending = false;
+  } else {
+    noteTextEditFastPaint();
+  }
+}
+
+void redrawTextEditFieldOnly() {
+  gScreen = Screen::TextEdit;
+  canvasSetHoldCleanRefresh(true);
+  uiRedrawTextEditField(gTextBuf, gTextMode);
+  noteTextEditFastPaint();
 }
 
 void openTextEditor(TextEditMode mode, const char* title, const char* initial, const char* path) {
@@ -244,7 +296,7 @@ void openTextEditor(TextEditMode mode, const char* title, const char* initial, c
     snprintf(gTextBuf, sizeof(gTextBuf), "%s", initial);
     gTextLen = strlen(gTextBuf);
   }
-  redrawTextEdit();
+  redrawTextEdit(true);
 }
 
 void openTextFile(const char* path, const char* name) {
@@ -259,7 +311,7 @@ void openTextFile(const char* path, const char* name) {
   gOskSymbols = false;
   snprintf(gTextPath, sizeof(gTextPath), "%s", path ? path : "");
   snprintf(gTextTitle, sizeof(gTextTitle), "%s", name ? name : "Edit");
-  redrawTextEdit();
+  redrawTextEdit(true);
 }
 
 void textAppend(char ch) {
@@ -281,6 +333,10 @@ bool nameLooksSafe(const char* name) {
 }
 
 void finishTextEdit(bool save) {
+  // Drop the hold so the explorer/home paint that follows can scrub ghosts.
+  canvasSetHoldCleanRefresh(false);
+  canvasRequestCleanRefresh();
+
   if (!save) {
     redrawExplorer();
     return;
@@ -340,7 +396,7 @@ void finishTextEdit(bool save) {
     char base[96];
     if (!fileOpsBasename(dest, base, sizeof(base))) snprintf(base, sizeof(base), "Edit");
     snprintf(gTextTitle, sizeof(gTextTitle), "%s", base);
-    redrawTextEdit();
+    redrawTextEdit(true);
     return;
   }
 
@@ -483,16 +539,45 @@ void clearSlot(int slotIndex) {
 }
 
 void showShade() {
+  // Remember the underlying screen so Close returns there (not always Home).
+  // Settings is reached from the shade itself — keep the prior return target.
+  if (gScreen == Screen::Home || gScreen == Screen::Explorer || gScreen == Screen::TextEdit) {
+    gShadeReturn = gScreen;
+  }
+  canvasSetHoldCleanRefresh(false);
   gScreen = Screen::Shade;
   refreshSlots();
   canvasRequestCleanRefresh();
   uiDrawShade(gSpace);
 }
 
+void closeShade() {
+  const Screen back = gShadeReturn;
+  gShadeReturn = Screen::Home;
+  canvasRequestCleanRefresh();
+  switch (back) {
+    case Screen::Explorer:
+      redrawExplorer();
+      break;
+    case Screen::TextEdit:
+      redrawTextEdit(true);
+      break;
+    case Screen::Settings:
+      gScreen = Screen::Settings;
+      refreshSlots();
+      uiDrawSettings(gSpace);
+      break;
+    case Screen::Home:
+    default:
+      showHome();
+      break;
+  }
+}
+
 void handleShadeHit(const UiHit& hit) {
   switch (hit.kind) {
     case UiHit::Kind::CloseShade:
-      showHome();
+      closeShade();
       break;
     case UiHit::Kind::BrightnessMinus:
       boardSetBrightness(boardBrightness() - 5);
@@ -512,10 +597,33 @@ void handleShadeHit(const UiHit& hit) {
       boardSetFrontlightOn(!boardFrontlightOn());
       uiDrawShade(gSpace);
       break;
-    case UiHit::Kind::ScrubNow:
+    case UiHit::Kind::ScrubNow: {
+      // Nuclear: black/white flash, redraw underlying UI, full scrub.
+      const Screen back = gShadeReturn;
+      gShadeReturn = Screen::Home;
+      canvasSetHoldCleanRefresh(false);
+      canvasNuclearFlash();
       canvasRequestCleanRefresh();
-      uiDrawShade(gSpace);
+      switch (back) {
+        case Screen::Explorer:
+          redrawExplorer();
+          break;
+        case Screen::TextEdit:
+          redrawTextEdit(true);
+          break;
+        case Screen::Settings:
+          gScreen = Screen::Settings;
+          refreshSlots();
+          uiDrawSettings(gSpace);
+          break;
+        case Screen::Home:
+        default:
+          showHome();
+          break;
+      }
+      canvasPresent(EInkDisplay::FULL_REFRESH);
       break;
+    }
     case UiHit::Kind::Settings:
       gScreen = Screen::Settings;
       refreshSlots();
@@ -606,28 +714,34 @@ void handleExplorerHit(const UiHit& hit) {
   }
 }
 
-void handleTextHit(const UiHit& hit) {
+// Apply one OSK hit. Returns true if the screen left TextEdit (Cancel/Done).
+// Sets *layoutChanged when the keyboard glyphs must be redrawn; *textChanged
+// when only the field content changed.
+bool applyTextHit(const UiHit& hit, bool& textChanged, bool& layoutChanged) {
   switch (hit.kind) {
     case UiHit::Kind::KeyCancel:
       finishTextEdit(false);
-      break;
+      return true;
     case UiHit::Kind::KeyDone:
       finishTextEdit(true);
-      break;
-    case UiHit::Kind::KeyChar:
+      return true;
+    case UiHit::Kind::KeyChar: {
+      // Stay on the 123 page until ABC is tapped (Android-style). Shift is
+      // still one-shot for a single capital.
+      const bool shiftWasOn = gOskShift;
       if (hit.value > 0 && hit.value < 128) textAppend(static_cast<char>(hit.value));
-      // After a symbol/punctuation key, return to letters automatically.
-      if (gOskSymbols) gOskSymbols = false;
       gOskShift = false;
-      redrawTextEdit();
+      if (shiftWasOn && !gOskSymbols) layoutChanged = true;
+      else textChanged = true;
       break;
+    }
     case UiHit::Kind::KeySpace:
       textAppend(' ');
-      redrawTextEdit();
+      textChanged = true;
       break;
     case UiHit::Kind::KeyBackspace:
       textBackspace();
-      redrawTextEdit();
+      textChanged = true;
       break;
     case UiHit::Kind::KeyShift:
       if (gOskSymbols) {
@@ -636,16 +750,35 @@ void handleTextHit(const UiHit& hit) {
       } else {
         gOskShift = !gOskShift;
       }
-      redrawTextEdit();
+      layoutChanged = true;
       break;
     case UiHit::Kind::KeySymbols:
       gOskSymbols = !gOskSymbols;
       gOskShift = false;
-      redrawTextEdit();
+      layoutChanged = true;
       break;
     default:
       break;
   }
+  return false;
+}
+
+void handleTextHit(const UiHit& hit) {
+  bool textChanged = false;
+  bool layoutChanged = false;
+  if (applyTextHit(hit, textChanged, layoutChanged)) return;
+
+  // Drain any taps that arrived while the previous refresh was blocking so a
+  // fast typist gets one present for the whole burst.
+  for (;;) {
+    int x = 0, y = 0;
+    if (!boardPollTouch(x, y)) break;
+    const UiHit next = uiHitTextEdit(x, y, gOskSymbols, gOskShift);
+    if (applyTextHit(next, textChanged, layoutChanged)) return;
+  }
+
+  if (layoutChanged) redrawTextEdit(false);
+  else if (textChanged) redrawTextEditFieldOnly();
 }
 
 void handleTouch(int x, int y) {
@@ -673,7 +806,12 @@ void handleTouch(int x, int y) {
   }
 
   if (gScreen == Screen::TextEdit) {
-    handleTextHit(uiHitTextEdit(x, y, gOskSymbols, gOskShift));
+    const UiHit hit = uiHitTextEdit(x, y, gOskSymbols, gOskShift);
+    if (hit.kind == UiHit::Kind::OpenShade) {
+      showShade();
+      return;
+    }
+    handleTextHit(hit);
     return;
   }
 
@@ -733,6 +871,8 @@ void handleTouch(int x, int y) {
 
     if (hit.kind == UiHit::Kind::Back) {
       showShade();
+    } else if (hit.kind == UiHit::Kind::OpenShade) {
+      showShade();
     } else if (hit.kind == UiHit::Kind::PowerOff) {
       enterSleepWithScreensaver();
     } else if (hit.kind == UiHit::Kind::SleepAfterMinus) {
@@ -791,9 +931,14 @@ void handleTouch(int x, int y) {
 
   if (gScreen == Screen::Explorer) {
     const bool canUp = !appsIsRootDir(gPath);
-    handleExplorerHit(
+    const UiHit hit =
         uiHitExplorer(x, y, static_cast<int>(gEntries.size()), gScroll, canUp, gSheetOpen,
-                    fileClipboard().hasItem));
+                      fileClipboard().hasItem);
+    if (hit.kind == UiHit::Kind::OpenShade) {
+      showShade();
+      return;
+    }
+    handleExplorerHit(hit);
     return;
   }
 
@@ -884,12 +1029,16 @@ void loop() {
     noteActivity();
     const int dy = y1 - y0;
     const int dx = x1 - x0;
-    if (gScreen == Screen::Home && y0 < 120 && dy > 80 && abs(dy) > abs(dx)) {
+    const bool fromTop = y0 < 120;
+    const bool pullDown = fromTop && dy > 80 && abs(dy) > abs(dx);
+    const bool canShade = gScreen == Screen::Home || gScreen == Screen::Explorer ||
+                          gScreen == Screen::TextEdit || gScreen == Screen::Settings;
+    if (canShade && pullDown) {
       showShade();
       return;
     }
     if (gScreen == Screen::Shade && dy < -80 && abs(dy) > abs(dx)) {
-      showHome();
+      closeShade();
       return;
     }
     if (gScreen == Screen::Explorer && !gSheetOpen && abs(dy) > abs(dx) && abs(dy) > 40) {
@@ -935,12 +1084,16 @@ void loop() {
     handleTouch(x, y);
   }
 
+  maybeIdleScrubTextEdit();
+  maybeIdleScrubHome();
+
   if (gScreen == Screen::Home) {
     const BoardClockInfo c = boardClock();
     if (c.valid && c.minute != gLastClockMinute) {
       gLastClockMinute = c.minute;
       refreshSlots();
       uiDrawHome(gSlots, gSpace);
+      gLastHomeScrubMs = millis();
     }
   }
 

@@ -17,9 +17,17 @@ void canvasClear();
 void canvasPresent(EInkDisplay::RefreshMode mode = EInkDisplay::HALF_REFRESH);
 // FAST by default; inserts a HALF scrub every few frames (and when requested).
 void canvasPresentAuto();
+// While held, canvasPresentAuto never promotes to HALF — for text entry where
+// a mid-type scrub is worse than temporary ghosting (scrub on exit instead).
+void canvasSetHoldCleanRefresh(bool hold);
+bool canvasHoldCleanRefresh();
 void canvasRequestCleanRefresh();
 void canvasSetCleanEvery(int n);  // 1..30 frames between clean scrubs
 int canvasCleanEvery();
+
+// Black → white flash so the next redraw/FULL can dig out ghosts that a plain
+// clean bank would skip on already-white pixels.
+void canvasNuclearFlash();
 
 void canvasSetPixel(int x, int y, bool black);
 void canvasFillRect(int x, int y, int w, int h, bool black);

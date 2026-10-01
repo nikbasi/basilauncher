@@ -6,6 +6,7 @@ struct BoardPowerInfo {
   bool known = false;
   int percent = -1;  // 0..100
   bool charging = false;
+  bool plugged = false;  // USB/external power present (may be full, not charging)
 };
 
 struct BoardClockInfo {

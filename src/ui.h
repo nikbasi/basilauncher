@@ -109,7 +109,11 @@ void uiDrawMessage(const char* title, const char* body);
 void uiDrawConfirm(const char* title, const char* body);
 void uiDrawImageViewHint();  // overlay tip after BMP drawn
 void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shift,
-                    TextEditMode mode);
+                    TextEditMode mode, bool scrub = false);
+// Fast path: rewrite only the text field in the existing framebuffer (keyboard
+// unchanged) and FAST-present. Call after char/space/backspace when layout is
+// unchanged.
+void uiRedrawTextEditField(const char* text, TextEditMode mode);
 
 UiHit uiHitHome(int x, int y);
 UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool sheetOpen,

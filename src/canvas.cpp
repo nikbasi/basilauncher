@@ -41,6 +41,7 @@ void canvasClear() { display.clearScreen(0xFF); }
 namespace {
 int gUntilCleanRefresh = 1;  // first paint scrub
 int gCleanEvery = 8;
+bool gHoldCleanRefresh = false;
 int gUiTextSize = 1;  // 0=Small 10×20, 1=Medium 12×24, 2=Large 14×28
 }  // namespace
 
@@ -112,14 +113,30 @@ void canvasPresentAuto() {
   // Same cadence as Aurora: FAST for ordinary UI, HALF every few frames to
   // scrub. Consecutive HALF/FULL on this panel skip unchanged white and leave
   // faint imprints of the previous screen.
+  //
+  // Hold skips the scrub counter entirely — used by the on-screen keyboard so
+  // typing never pays for a mid-burst HALF (ghosting is scrubbed on exit).
   EInkDisplay::RefreshMode mode = EInkDisplay::FAST_REFRESH;
-  if (gUntilCleanRefresh <= 1) {
+  if (!gHoldCleanRefresh && gUntilCleanRefresh <= 1) {
     mode = EInkDisplay::HALF_REFRESH;
     gUntilCleanRefresh = gCleanEvery;
-  } else {
+  } else if (!gHoldCleanRefresh) {
     --gUntilCleanRefresh;
   }
   canvasPresent(mode);
+}
+
+void canvasSetHoldCleanRefresh(bool hold) { gHoldCleanRefresh = hold; }
+
+bool canvasHoldCleanRefresh() { return gHoldCleanRefresh; }
+
+void canvasNuclearFlash() {
+  gHoldCleanRefresh = false;
+  // Drive every pixel off white through the fast bank, then scrub toward white.
+  display.clearScreen(0x00);
+  canvasPresent(EInkDisplay::FAST_REFRESH);
+  display.clearScreen(0xFF);
+  canvasPresent(EInkDisplay::HALF_REFRESH);
 }
 
 void canvasSetPixel(int x, int y, bool black) {
