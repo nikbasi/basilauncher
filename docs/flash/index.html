@@ -94,7 +94,7 @@
 
     <div class="card">
       <h2>Install</h2>
-      <p>Writes the <strong>full image</strong> (custom bootloader + partitions + hub) at <code>0x0</code>. Otadata is cleared inside that image so the device boots Basilauncher.</p>
+      <p>Writes bootloader, partition table, cleared otadata, and factory hub (same layout as a USB first install). Firmware is fetched from GitHub without gzip, which breaks some browsers on Pages.</p>
       <div class="flash-row">
         <esp-web-install-button manifest="./manifest.json">
           <button slot="activate">Connect &amp; flash</button>
