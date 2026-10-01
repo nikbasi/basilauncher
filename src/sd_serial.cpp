@@ -268,6 +268,20 @@ void handleLine(char* line) {
     handleProbe(line + 6);
     return;
   }
+  if (strncmp(line, "RM ", 3) == 0) {
+    const char* path = line + 3;
+    if (!pathAllowed(path) || strcmp(path, "/firmware") == 0 || strcmp(path, "/sleep") == 0) {
+      Serial.println("ERR bad path");
+      return;
+    }
+    if (!SD.exists(path)) {
+      Serial.println("ERR missing");
+      return;
+    }
+    if (SD.remove(path)) Serial.println("OK");
+    else Serial.println("ERR remove");
+    return;
+  }
 }
 
 }  // namespace
