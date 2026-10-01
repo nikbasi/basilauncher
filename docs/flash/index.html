@@ -94,7 +94,7 @@
 
     <div class="card">
       <h2>Install</h2>
-      <p>Writes bootloader, partition table, cleared otadata, and factory hub (same layout as a USB first install). Firmware is fetched from GitHub without gzip, which breaks some browsers on Pages.</p>
+      <p>Writes bootloader, partition table, cleared otadata, and factory hub (same layout as a USB first install). Firmware bits are fetched from GitHub raw URLs (no Pages gzip), which previously broke the download in some browsers.</p>
       <div class="flash-row">
         <esp-web-install-button manifest="./manifest.json">
           <button slot="activate">Connect &amp; flash</button>
