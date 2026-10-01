@@ -52,11 +52,9 @@ Also searchable as: *LilyGO T5 S3 Pro*, *T5 epaper S3 Pro*, *ESP32-S3 e-ink laun
 
 <p align="center">
   <img src="docs/images/home.jpg" alt="Basilauncher home — four guest slots" width="280" />
-  &nbsp;
-  <img src="docs/images/sleep.jpg" alt="Basilauncher sleep screensaver" width="280" />
 </p>
 
-<p align="center"><em>Home / Apps (left) · Sleep screensaver (right)</em></p>
+<p align="center"><em>Home / Apps on the LilyGO T5 E-Paper S3 Pro</em></p>
 
 ## Quick start
 
