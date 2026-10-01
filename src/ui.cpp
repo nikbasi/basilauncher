@@ -11,7 +11,6 @@
 namespace {
 
 constexpr int kPad = 18;
-constexpr int kStatusH = 74;
 constexpr int kDockH = 88;           // message / confirm single-row dock
 constexpr int kExplorerDockH = 64;   // slim icon toolbar
 constexpr int kHomeFooterH = 64;     // Files chip strip
@@ -30,9 +29,20 @@ constexpr int kActionBtnH = 52;  // full-width actions (Light / Scrub / About / 
 // Shade layout — compact sheet under the status bar, not full-page.
 constexpr int kShadeGrabH = 28;
 constexpr int kShadeRadius = 18;
-constexpr int kStepBtn = 56;  // +/- steppers — large enough for finger taps
+constexpr int kStepBtn = 52;  // +/- steppers — large enough for finger taps
 int gBrightX = 0, gBrightY = 0, gBrightW = 0, gBrightH = 0;
 int gShadePanelBottom = 0;
+
+int statusBarH() {
+  // Time row, brand row, optional grabber cue — scales with UI text size.
+  const int topPad = 8;
+  const int timeH = canvasTextHeight(2);
+  const int brandH = canvasTextHeight(kBody);
+  const int gap = 6;
+  const int grabSlot = 10;
+  const int botPad = 8;
+  return topPad + timeH + gap + brandH + gap + grabSlot + botPad;
+}
 
 struct ShadeGeom {
   int panelX = 0;
@@ -44,14 +54,6 @@ struct ShadeGeom {
   int frontLabelY = 0;
   int sliderY = 0;
   int lightY = 0;
-  int clockRuleY = 0;
-  int clockLabelY = 0;
-  int timeValueY = 0;
-  int clockRowY = 0;
-  int hourMinusX = 0;
-  int hourPlusX = 0;
-  int minMinusX = 0;
-  int minPlusX = 0;
   int scrubY = 0;
   int settingsY = 0;
   int grabY = 0;
@@ -60,38 +62,20 @@ struct ShadeGeom {
 ShadeGeom shadeGeom() {
   ShadeGeom g;
   g.panelX = kPad / 2;
-  g.panelY = kStatusH + 6;
+  g.panelY = statusBarH() + 6;
   g.panelW = kScreenW - kPad;
 
   int y = g.panelY + 12;
   g.titleY = y;
-  y += 34;
+  y += canvasTextHeight(kTitle) + 10;
   g.frontRuleY = y;
-  y += 14;
+  y += 12;
   g.frontLabelY = y;
-  y += 24;
+  y += canvasTextHeight(kBody) + 8;
   g.sliderY = y;
   y += kStepBtn + 10;
   g.lightY = y;
-  y += kActionBtnH + 12;
-  g.clockRuleY = y;
-  y += 14;
-  g.clockLabelY = y;
-  y += 24;
-  g.timeValueY = y;
-  y += 40;
-  g.clockRowY = y;
-
-  constexpr int kStepGap = 56;
-  const int groupW = kStepBtn + kStepGap + kStepBtn;
-  const int gap = 18;
-  const int startX = (kScreenW - (groupW * 2 + gap)) / 2;
-  g.hourMinusX = startX;
-  g.hourPlusX = startX + kStepBtn + kStepGap;
-  g.minMinusX = startX + groupW + gap;
-  g.minPlusX = g.minMinusX + kStepBtn + kStepGap;
-  y += kStepBtn + 16;
-
+  y += kActionBtnH + 14;
   g.scrubY = y;
   y += kActionBtnH + 12;
   g.settingsY = y;
@@ -102,16 +86,20 @@ ShadeGeom shadeGeom() {
 }
 
 struct SettingsGeom {
+  int titleY = 0;
   int textSizeY = 0;
   int sleepY = 0;
-  int dateLabelY = 0;
-  int dateValueY = 0;
-  int dateRowY = 0;
-  int yearMinusX = 0, yearPlusX = 0;
-  int monthMinusX = 0, monthPlusX = 0;
-  int dayMinusX = 0, dayPlusX = 0;
   int cleanY = 0;
   int cleanMinusX = 0, cleanPlusX = 0;
+  int timeLabelY = 0;
+  int hourY = 0;
+  int minuteY = 0;
+  int dateLabelY = 0;
+  int yearY = 0;
+  int monthY = 0;
+  int dayY = 0;
+  int rowMinusX = 0;
+  int rowPlusX = 0;
   int powerY = 0;
   int backY = 0;
   int tipY = 0;
@@ -119,38 +107,42 @@ struct SettingsGeom {
 
 SettingsGeom settingsGeom() {
   SettingsGeom g;
-  int y = kStatusH + kPad + 8;
-  y += canvasTextHeight(kTitle) + 10;
-  y += canvasTextHeight(kBody) + 16;  // version line
+  constexpr int step = kStepBtn;
+  constexpr int valueW = 120;
+  g.rowMinusX = kScreenW - kPad - step * 2 - valueW;
+  g.rowPlusX = kScreenW - kPad - step;
+  g.cleanMinusX = g.rowMinusX;
+  g.cleanPlusX = g.rowPlusX;
+
+  int y = statusBarH() + kPad;
+  g.titleY = y;
+  y += canvasTextHeight(kTitle) + 16;
+
   g.textSizeY = y;
-  y += kStepBtn + 14;
+  y += step + 10;
   g.sleepY = y;
-  y += kStepBtn + 18;
-  g.dateLabelY = y;
-  y += canvasTextHeight(kBody) + 8;
-  g.dateValueY = y;
-  y += canvasTextHeight(2) + 10;
-  g.dateRowY = y;
-
-  constexpr int kStepGap = 40;
-  const int groupW = kStepBtn + kStepGap + kStepBtn;
-  const int gap = 8;
-  const int startX = (kScreenW - (groupW * 3 + gap * 2)) / 2;
-  g.yearMinusX = startX;
-  g.yearPlusX = startX + kStepBtn + kStepGap;
-  g.monthMinusX = startX + groupW + gap;
-  g.monthPlusX = g.monthMinusX + kStepBtn + kStepGap;
-  g.dayMinusX = startX + 2 * (groupW + gap);
-  g.dayPlusX = g.dayMinusX + kStepBtn + kStepGap;
-  y += kStepBtn + 18;
-
+  y += step + 10;
   g.cleanY = y;
-  g.cleanMinusX = kScreenW - kPad - kStepBtn * 2 - 80;
-  g.cleanPlusX = kScreenW - kPad - kStepBtn;
-  y += kStepBtn + 18;
+  y += step + 18;
+
+  g.timeLabelY = y;
+  y += canvasTextHeight(kBody) + 10;
+  g.hourY = y;
+  y += step + 8;
+  g.minuteY = y;
+  y += step + 18;
+
+  g.dateLabelY = y;
+  y += canvasTextHeight(kBody) + 10;
+  g.yearY = y;
+  y += step + 8;
+  g.monthY = y;
+  y += step + 8;
+  g.dayY = y;
+  y += step + 18;
 
   g.powerY = y;
-  y += kActionBtnH + 14;
+  y += kActionBtnH + 12;
   g.backY = y;
   y += kActionBtnH + 12;
   g.tipY = y;
@@ -177,7 +169,7 @@ void drawSectionRule(int y, int panelX, int panelW) {
 
 int homeListTop() {
   // Status → pad → Apps title → gap → first card.
-  return kStatusH + 18 + canvasTextHeight(kTitle) + 18;
+  return statusBarH() + 18 + canvasTextHeight(kTitle) + 18;
 }
 
 int slotCardH() {
@@ -214,14 +206,18 @@ void drawBatteryGlyph(int x, int y, int percent, bool charging) {
 }
 
 void drawStatusBar(const FlashSpace& space, bool shadeHint) {
-  canvasFillRect(0, 0, kScreenW, kStatusH, false);
+  const int barH = statusBarH();
+  canvasFillRect(0, 0, kScreenW, barH, false);
   const BoardClockInfo clock = boardClock();
   const BoardPowerInfo power = boardPower();
 
-  canvasDrawString(kPad, 8, clock.valid ? clock.time : "--:--", true, 2);
+  const int timeY = 8;
+  const int timeH = canvasTextHeight(2);
+  canvasDrawString(kPad, timeY, clock.valid ? clock.time : "--:--", true, 2);
   if (clock.valid && clock.date[0]) {
     const int timeW = canvasTextWidth(clock.valid ? clock.time : "--:--", 2);
-    canvasDrawString(kPad + timeW + 14, 16, clock.date, true, kBody);
+    const int dateY = timeY + (timeH - canvasTextHeight(kBody)) / 2;
+    canvasDrawString(kPad + timeW + 14, dateY, clock.date, true, kBody);
   }
 
   char batt[16];
@@ -229,22 +225,25 @@ void drawStatusBar(const FlashSpace& space, bool shadeHint) {
     snprintf(batt, sizeof(batt), "%d%%", power.percent);
     const int tw = canvasTextWidth(batt, kBody);
     const int bx = kScreenW - kPad - tw - 36;
-    drawBatteryGlyph(bx, 14, power.percent, power.charging);
-    canvasDrawString(bx + 34, 12, batt, true, kBody);
+    const int battY = timeY + (timeH - 14) / 2;
+    drawBatteryGlyph(bx, battY, power.percent, power.charging);
+    canvasDrawString(bx + 34, timeY + (timeH - canvasTextHeight(kBody)) / 2, batt, true, kBody);
   } else {
     const char* na = "batt --";
-    canvasDrawString(kScreenW - kPad - canvasTextWidth(na, kBody), 12, na, true, kBody);
+    canvasDrawString(kScreenW - kPad - canvasTextWidth(na, kBody),
+                     timeY + (timeH - canvasTextHeight(kBody)) / 2, na, true, kBody);
   }
 
+  const int brandY = timeY + timeH + 6;
   char brand[40];
   snprintf(brand, sizeof(brand), "Basilauncher  v%s", BASILAUNCHER_VERSION);
-  canvasDrawString(kPad, 44, brand, true, kBody);
+  canvasDrawString(kPad, brandY, brand, true, kBody);
 
   if (shadeHint) {
-    // Grabber cue in the status bar
-    canvasFillRoundRect(kScreenW / 2 - 28, kStatusH - 10, 56, 5, 2, true);
+    const int grabY = brandY + canvasTextHeight(kBody) + 4;
+    canvasFillRoundRect(kScreenW / 2 - 28, grabY, 56, 5, 2, true);
   }
-  canvasDrawLine(0, kStatusH - 1, kScreenW - 1, kStatusH - 1, true);
+  canvasDrawLine(0, barH - 1, kScreenW - 1, barH - 1, true);
 }
 
 // Short steppers (+/−) render at scale 2 so the glyph fills the fat tap target.
@@ -411,7 +410,7 @@ void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space) {
   canvasClear();
   drawStatusBar(space, true);
 
-  const int appsY = kStatusH + 18;
+  const int appsY = statusBarH() + 18;
   canvasDrawString(kPad, appsY, "Apps", true, kTitle);
 
   for (int i = 0; i < kSlotCount; ++i) drawSlotCard(i, slots[i]);
@@ -434,7 +433,7 @@ constexpr int kExplorerRowH = 72;
 
 int uiExplorerRowHeight() { return kExplorerRowH; }
 
-int explorerListTop() { return kStatusH + 116; }
+int explorerListTop() { return statusBarH() + 116; }
 int explorerListBottom() { return kScreenH - kExplorerDockH - 8; }
 
 int uiExplorerVisibleRows() {
@@ -675,13 +674,13 @@ void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawStat
   } else {
     snprintf(title, sizeof(title), "Files");
   }
-  canvasDrawString(kPad, kStatusH + 12, title, true, kTitle);
+  canvasDrawString(kPad, statusBarH() + 12, title, true, kTitle);
 
   // Close (X) top-right — leaves the explorer.
   constexpr int kCloseW = 52;
   constexpr int kCloseH = 48;
   const int closeX = kScreenW - kPad - kCloseW;
-  const int closeY = kStatusH + 8;
+  const int closeY = statusBarH() + 8;
   drawIconBtn(closeX, closeY, kCloseW, kCloseH, drawIconClose, false);
 
   // Up chip replaces the path bar: icon + truncated current path.
@@ -693,7 +692,7 @@ void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawStat
     snprintf(shortP, sizeof(shortP), "...%s", pathLine + strlen(pathLine) - 20);
     snprintf(pathLine, sizeof(pathLine), "%s", shortP);
   }
-  const int upY = kStatusH + 62;
+  const int upY = statusBarH() + 62;
   const int upH = 44;
   const int upW = kScreenW - 2 * kPad - (st.clipboardHas || st.mode == ExplorerMode::Install ? 110 : 0);
   if (atRoot) {
@@ -849,14 +848,14 @@ UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool
   constexpr int kCloseW = 52;
   constexpr int kCloseH = 48;
   const int closeX = kScreenW - kPad - kCloseW;
-  const int closeY = kStatusH + 8;
+  const int closeY = statusBarH() + 8;
   if (hitIconBtn(x, y, closeX, closeY, kCloseW, kCloseH)) {
     hit.kind = UiHit::Kind::Back;
     return hit;
   }
 
   // Up chip / path row
-  const int upY = kStatusH + 62;
+  const int upY = statusBarH() + 62;
   const int upH = 44;
   const int upW = kScreenW - 2 * kPad - (clipboardHas ? 110 : 0);
   if (y >= upY && y < upY + upH && x >= kPad && x < kPad + upW) {
@@ -940,29 +939,6 @@ void uiDrawShade(const FlashSpace& space) {
     else drawChromeOutlineBtn(bx, g.lightY, 160, kActionBtnH, "Light off");
   }
 
-  drawSectionRule(g.clockRuleY, g.panelX, g.panelW);
-  canvasDrawString(kPad + 8, g.clockLabelY, "Time", true, kBody);
-  const BoardClockInfo clock = boardClock();
-  if (clock.valid) {
-    canvasDrawString(kScreenW - kPad - 8 - canvasTextWidth(clock.date, kSmall), g.clockLabelY, clock.date,
-                     true, kSmall);
-  }
-
-  char timeBuf[16];
-  snprintf(timeBuf, sizeof(timeBuf), "%s", clock.valid ? clock.time : "--:--");
-  canvasDrawString(kScreenW / 2 - canvasTextWidth(timeBuf, 2) / 2, g.timeValueY, timeBuf, true, 2);
-
-  constexpr int kStepGap = 56;
-  drawChromeOutlineBtn(g.hourMinusX, g.clockRowY, kStepBtn, kStepBtn, "-");
-  drawChromeOutlineBtn(g.hourPlusX, g.clockRowY, kStepBtn, kStepBtn, "+");
-  canvasDrawString(g.hourMinusX + kStepBtn + (kStepGap - canvasTextWidth("Hour", kSmall)) / 2,
-                   g.clockRowY + (kStepBtn - canvasTextHeight(kSmall)) / 2, "Hour", true, kSmall);
-
-  drawChromeOutlineBtn(g.minMinusX, g.clockRowY, kStepBtn, kStepBtn, "-");
-  drawChromeOutlineBtn(g.minPlusX, g.clockRowY, kStepBtn, kStepBtn, "+");
-  canvasDrawString(g.minMinusX + kStepBtn + (kStepGap - canvasTextWidth("Min", kSmall)) / 2,
-                   g.clockRowY + (kStepBtn - canvasTextHeight(kSmall)) / 2, "Min", true, kSmall);
-
   drawChromeOutlineBtn(kPad + 8, g.scrubY, kScreenW - 2 * kPad - 16, kActionBtnH, "Scrub screen now");
   drawChromeOutlineBtn(kPad + 8, g.settingsY, kScreenW - 2 * kPad - 16, kActionBtnH, "Settings");
 
@@ -1004,25 +980,6 @@ UiHit uiHitShade(int x, int y) {
     }
   }
 
-  if (y >= g.clockRowY && y < g.clockRowY + kStepBtn) {
-    if (x >= g.hourMinusX && x < g.hourMinusX + kStepBtn) {
-      hit.kind = UiHit::Kind::HourMinus;
-      return hit;
-    }
-    if (x >= g.hourPlusX && x < g.hourPlusX + kStepBtn) {
-      hit.kind = UiHit::Kind::HourPlus;
-      return hit;
-    }
-    if (x >= g.minMinusX && x < g.minMinusX + kStepBtn) {
-      hit.kind = UiHit::Kind::MinuteMinus;
-      return hit;
-    }
-    if (x >= g.minPlusX && x < g.minPlusX + kStepBtn) {
-      hit.kind = UiHit::Kind::MinutePlus;
-      return hit;
-    }
-  }
-
   if (y >= g.scrubY && y < g.scrubY + kActionBtnH && x >= kPad + 8 && x < kScreenW - kPad - 8) {
     hit.kind = UiHit::Kind::ScrubNow;
     return hit;
@@ -1036,72 +993,72 @@ UiHit uiHitShade(int x, int y) {
   return hit;
 }
 
+void drawSettingsStepper(int y, const char* label, const char* value, int minusX, int plusX) {
+  constexpr int step = kStepBtn;
+  const int bodyH = canvasTextHeight(kBody);
+  canvasDrawString(kPad, y + (step - bodyH) / 2, label, true, kBody);
+  drawOutlineBtn(minusX, y, step, step, "-");
+  drawOutlineBtn(plusX, y, step, step, "+");
+  const int valueW = plusX - (minusX + step);
+  const int vx = minusX + step + (valueW - canvasTextWidth(value, kBody)) / 2;
+  canvasDrawString(vx, y + (step - bodyH) / 2, value, true, kBody);
+}
+
+const char* monthName(int month) {
+  static const char* names[] = {"--", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+  if (month < 1 || month > 12) return names[0];
+  return names[month];
+}
+
 void uiDrawSettings(const FlashSpace& space) {
   canvasClear();
   drawStatusBar(space, false);
   const SettingsGeom g = settingsGeom();
-
-  canvasDrawString(kPad, kStatusH + kPad + 8, "Settings", true, kTitle);
-  char ver[40];
-  snprintf(ver, sizeof(ver), "Basilauncher  v%s", BASILAUNCHER_VERSION);
-  canvasDrawString(kPad, kStatusH + kPad + 8 + canvasTextHeight(kTitle) + 10, ver, true, kBody);
-
   constexpr int step = kStepBtn;
-  constexpr int valueW = 100;
-  constexpr int kStepGap = 40;
 
-  // Text size
-  canvasDrawString(kPad, g.textSizeY + (step - canvasTextHeight(kBody)) / 2, "Text size", true, kBody);
-  drawOutlineBtn(kScreenW - kPad - step * 2 - valueW, g.textSizeY, step, step, "-");
-  drawOutlineBtn(kScreenW - kPad - step, g.textSizeY, step, step, "+");
+  canvasDrawString(kPad, g.titleY, "Settings", true, kTitle);
+
   const char* sizeTxt = "Med";
   if (boardUiTextSize() <= 0) sizeTxt = "Small";
   else if (boardUiTextSize() >= 2) sizeTxt = "Large";
-  const int fx = kScreenW - kPad - step * 2 - valueW + step +
-                 (valueW - step - canvasTextWidth(sizeTxt, kBody)) / 2;
-  canvasDrawString(fx, g.textSizeY + (step - canvasTextHeight(kBody)) / 2, sizeTxt, true, kBody);
+  drawSettingsStepper(g.textSizeY, "Text size", sizeTxt, g.rowMinusX, g.rowPlusX);
 
-  // Auto-sleep
-  canvasDrawString(kPad, g.sleepY + (step - canvasTextHeight(kBody)) / 2, "Auto-sleep", true, kBody);
-  drawOutlineBtn(kScreenW - kPad - step * 2 - valueW, g.sleepY, step, step, "-");
-  drawOutlineBtn(kScreenW - kPad - step, g.sleepY, step, step, "+");
   char sleepTxt[16];
   if (boardSleepAfterMin() <= 0) snprintf(sleepTxt, sizeof(sleepTxt), "off");
   else snprintf(sleepTxt, sizeof(sleepTxt), "%dm", boardSleepAfterMin());
-  const int sx = kScreenW - kPad - step * 2 - valueW + step +
-                 (valueW - step - canvasTextWidth(sleepTxt, kBody)) / 2;
-  canvasDrawString(sx, g.sleepY + (step - canvasTextHeight(kBody)) / 2, sleepTxt, true, kBody);
+  drawSettingsStepper(g.sleepY, "Auto-sleep", sleepTxt, g.rowMinusX, g.rowPlusX);
 
-  // Date
-  canvasDrawString(kPad, g.dateLabelY, "Date", true, kBody);
-  const BoardClockInfo clock = boardClock();
-  char dateBuf[16];
-  snprintf(dateBuf, sizeof(dateBuf), "%s", clock.valid ? clock.date : "----.--.--");
-  canvasDrawString(kScreenW / 2 - canvasTextWidth(dateBuf, 2) / 2, g.dateValueY, dateBuf, true, 2);
-
-  drawOutlineBtn(g.yearMinusX, g.dateRowY, step, step, "-");
-  drawOutlineBtn(g.yearPlusX, g.dateRowY, step, step, "+");
-  canvasDrawString(g.yearMinusX + step + (kStepGap - canvasTextWidth("Y", kSmall)) / 2,
-                   g.dateRowY + (step - canvasTextHeight(kSmall)) / 2, "Y", true, kSmall);
-
-  drawOutlineBtn(g.monthMinusX, g.dateRowY, step, step, "-");
-  drawOutlineBtn(g.monthPlusX, g.dateRowY, step, step, "+");
-  canvasDrawString(g.monthMinusX + step + (kStepGap - canvasTextWidth("M", kSmall)) / 2,
-                   g.dateRowY + (step - canvasTextHeight(kSmall)) / 2, "M", true, kSmall);
-
-  drawOutlineBtn(g.dayMinusX, g.dateRowY, step, step, "-");
-  drawOutlineBtn(g.dayPlusX, g.dateRowY, step, step, "+");
-  canvasDrawString(g.dayMinusX + step + (kStepGap - canvasTextWidth("D", kSmall)) / 2,
-                   g.dateRowY + (step - canvasTextHeight(kSmall)) / 2, "D", true, kSmall);
-
-  // Clean every
-  canvasDrawString(kPad, g.cleanY + (step - canvasTextHeight(kBody)) / 2, "Clean every", true, kBody);
-  drawOutlineBtn(g.cleanMinusX, g.cleanY, step, step, "-");
-  drawOutlineBtn(g.cleanPlusX, g.cleanY, step, step, "+");
   char every[12];
   snprintf(every, sizeof(every), "%d", boardCleanEvery());
-  const int everyX = g.cleanMinusX + step + (80 - step - canvasTextWidth(every, kBody)) / 2;
-  canvasDrawString(everyX, g.cleanY + (step - canvasTextHeight(kBody)) / 2, every, true, kBody);
+  drawSettingsStepper(g.cleanY, "Clean every", every, g.cleanMinusX, g.cleanPlusX);
+
+  const BoardClockInfo clock = boardClock();
+  canvasDrawString(kPad, g.timeLabelY, "Time", true, kBody);
+  if (clock.valid) {
+    canvasDrawString(kScreenW - kPad - canvasTextWidth(clock.time, kBody), g.timeLabelY, clock.time, true,
+                     kBody);
+  }
+  char hourBuf[8];
+  snprintf(hourBuf, sizeof(hourBuf), "%02u", clock.valid ? clock.hour : 0);
+  drawSettingsStepper(g.hourY, "Hour", hourBuf, g.rowMinusX, g.rowPlusX);
+  char minBuf[8];
+  snprintf(minBuf, sizeof(minBuf), "%02u", clock.valid ? clock.minute : 0);
+  drawSettingsStepper(g.minuteY, "Minute", minBuf, g.rowMinusX, g.rowPlusX);
+
+  canvasDrawString(kPad, g.dateLabelY, "Date", true, kBody);
+  if (clock.valid) {
+    char pretty[24];
+    snprintf(pretty, sizeof(pretty), "%d %s %u", clock.day, monthName(clock.month), clock.year);
+    canvasDrawString(kScreenW - kPad - canvasTextWidth(pretty, kBody), g.dateLabelY, pretty, true, kBody);
+  }
+  char yearBuf[8];
+  snprintf(yearBuf, sizeof(yearBuf), "%u", clock.valid ? clock.year : 2026);
+  drawSettingsStepper(g.yearY, "Year", yearBuf, g.rowMinusX, g.rowPlusX);
+  drawSettingsStepper(g.monthY, "Month", monthName(clock.valid ? clock.month : 1), g.rowMinusX, g.rowPlusX);
+  char dayBuf[8];
+  snprintf(dayBuf, sizeof(dayBuf), "%u", clock.valid ? clock.day : 1);
+  drawSettingsStepper(g.dayY, "Day", dayBuf, g.rowMinusX, g.rowPlusX);
 
   drawOutlineBtn(kPad, g.powerY, kScreenW - 2 * kPad, kActionBtnH, "Sleep / power off");
   drawFilledBtn(kPad, g.backY, kScreenW - 2 * kPad, kActionBtnH, "Back");
@@ -1113,66 +1070,31 @@ UiHit uiHitSettings(int x, int y) {
   UiHit hit;
   const SettingsGeom g = settingsGeom();
   constexpr int step = kStepBtn;
-  constexpr int valueW = 100;
-  const int minusX = kScreenW - kPad - step * 2 - valueW;
-  const int plusX = kScreenW - kPad - step;
+  const int minusX = g.rowMinusX;
+  const int plusX = g.rowPlusX;
 
-  if (y >= g.textSizeY && y < g.textSizeY + step) {
+  auto hitStepper = [&](int rowY, UiHit::Kind minus, UiHit::Kind plus) -> bool {
+    if (y < rowY || y >= rowY + step) return false;
     if (x >= minusX && x < minusX + step) {
-      hit.kind = UiHit::Kind::FontSizeMinus;
-      return hit;
+      hit.kind = minus;
+      return true;
     }
     if (x >= plusX && x < plusX + step) {
-      hit.kind = UiHit::Kind::FontSizePlus;
-      return hit;
+      hit.kind = plus;
+      return true;
     }
-  }
-  if (y >= g.sleepY && y < g.sleepY + step) {
-    if (x >= minusX && x < minusX + step) {
-      hit.kind = UiHit::Kind::SleepAfterMinus;
-      return hit;
-    }
-    if (x >= plusX && x < plusX + step) {
-      hit.kind = UiHit::Kind::SleepAfterPlus;
-      return hit;
-    }
-  }
-  if (y >= g.dateRowY && y < g.dateRowY + step) {
-    if (x >= g.yearMinusX && x < g.yearMinusX + step) {
-      hit.kind = UiHit::Kind::YearMinus;
-      return hit;
-    }
-    if (x >= g.yearPlusX && x < g.yearPlusX + step) {
-      hit.kind = UiHit::Kind::YearPlus;
-      return hit;
-    }
-    if (x >= g.monthMinusX && x < g.monthMinusX + step) {
-      hit.kind = UiHit::Kind::MonthMinus;
-      return hit;
-    }
-    if (x >= g.monthPlusX && x < g.monthPlusX + step) {
-      hit.kind = UiHit::Kind::MonthPlus;
-      return hit;
-    }
-    if (x >= g.dayMinusX && x < g.dayMinusX + step) {
-      hit.kind = UiHit::Kind::DayMinus;
-      return hit;
-    }
-    if (x >= g.dayPlusX && x < g.dayPlusX + step) {
-      hit.kind = UiHit::Kind::DayPlus;
-      return hit;
-    }
-  }
-  if (y >= g.cleanY && y < g.cleanY + step) {
-    if (x >= g.cleanMinusX && x < g.cleanMinusX + step) {
-      hit.kind = UiHit::Kind::CleanEveryMinus;
-      return hit;
-    }
-    if (x >= g.cleanPlusX && x < g.cleanPlusX + step) {
-      hit.kind = UiHit::Kind::CleanEveryPlus;
-      return hit;
-    }
-  }
+    return false;
+  };
+
+  if (hitStepper(g.textSizeY, UiHit::Kind::FontSizeMinus, UiHit::Kind::FontSizePlus)) return hit;
+  if (hitStepper(g.sleepY, UiHit::Kind::SleepAfterMinus, UiHit::Kind::SleepAfterPlus)) return hit;
+  if (hitStepper(g.cleanY, UiHit::Kind::CleanEveryMinus, UiHit::Kind::CleanEveryPlus)) return hit;
+  if (hitStepper(g.hourY, UiHit::Kind::HourMinus, UiHit::Kind::HourPlus)) return hit;
+  if (hitStepper(g.minuteY, UiHit::Kind::MinuteMinus, UiHit::Kind::MinutePlus)) return hit;
+  if (hitStepper(g.yearY, UiHit::Kind::YearMinus, UiHit::Kind::YearPlus)) return hit;
+  if (hitStepper(g.monthY, UiHit::Kind::MonthMinus, UiHit::Kind::MonthPlus)) return hit;
+  if (hitStepper(g.dayY, UiHit::Kind::DayMinus, UiHit::Kind::DayPlus)) return hit;
+
   if (y >= g.powerY && y < g.powerY + kActionBtnH && x >= kPad && x < kScreenW - kPad) {
     hit.kind = UiHit::Kind::PowerOff;
     return hit;
@@ -1189,9 +1111,9 @@ void uiDrawProgress(const char* title, int percent) {
   if (percent > 100) percent = 100;
   canvasClear();
   drawStatusBar(appsFlashSpace(), false);
-  canvasDrawString(kPad, kStatusH + 80, title ? title : "Working...", true, kTitle);
+  canvasDrawString(kPad, statusBarH() + 80, title ? title : "Working...", true, kTitle);
   const int barX = kPad;
-  const int barY = kStatusH + 140;
+  const int barY = statusBarH() + 140;
   const int barW = kScreenW - 2 * kPad;
   const int barH = 32;
   canvasDrawRoundRect(barX, barY, barW, barH, 10, true);
@@ -1206,8 +1128,8 @@ void uiDrawProgress(const char* title, int percent) {
 void uiDrawMessage(const char* title, const char* body) {
   canvasClear();
   drawStatusBar(appsFlashSpace(), false);
-  canvasDrawString(kPad, kStatusH + 28, title ? title : "Notice", true, kTitle);
-  drawWrappedBody(body, kStatusH + 70);
+  canvasDrawString(kPad, statusBarH() + 28, title ? title : "Notice", true, kTitle);
+  drawWrappedBody(body, statusBarH() + 70);
   drawFilledBtn(kPad, kScreenH - kDockH - 70, kScreenW - 2 * kPad, kActionBtnH, "OK");
   presentClean();
 }
@@ -1215,8 +1137,8 @@ void uiDrawMessage(const char* title, const char* body) {
 void uiDrawConfirm(const char* title, const char* body) {
   canvasClear();
   drawStatusBar(appsFlashSpace(), false);
-  canvasDrawString(kPad, kStatusH + 28, title ? title : "Confirm", true, kTitle);
-  drawWrappedBody(body, kStatusH + 70);
+  canvasDrawString(kPad, statusBarH() + 28, title ? title : "Confirm", true, kTitle);
+  drawWrappedBody(body, statusBarH() + 70);
   const int y = kScreenH - kDockH;
   canvasDrawLine(0, y, kScreenW - 1, y, true);
   const int tileW = (kScreenW - 3 * kPad) / 2;
@@ -1345,10 +1267,10 @@ void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shif
   if (mode == TextEditMode::NewFolder) heading = "New folder";
   else if (mode == TextEditMode::NewFile) heading = "New file";
   else if (mode == TextEditMode::Rename) heading = "Rename";
-  canvasDrawString(kPad, kStatusH + kPad, heading, true, kTitle);
+  canvasDrawString(kPad, statusBarH() + kPad, heading, true, kTitle);
 
   const int actionY = oskActionBarY();
-  const int fieldTop = kStatusH + kPad + 40;
+  const int fieldTop = statusBarH() + kPad + 40;
   const int fieldBottom = actionY - 10;
   const char* body = text ? text : "";
   const size_t len = strlen(body);
@@ -1515,7 +1437,7 @@ UiHit uiHitTextEdit(int x, int y, bool symbols, bool shift) {
 
 UiHit uiHitHome(int x, int y) {
   UiHit hit;
-  if (y < kStatusH) {
+  if (y < statusBarH()) {
     hit.kind = UiHit::Kind::OpenShade;
     return hit;
   }

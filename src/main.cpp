@@ -512,34 +512,6 @@ void handleShadeHit(const UiHit& hit) {
       boardSetFrontlightOn(!boardFrontlightOn());
       uiDrawShade(gSpace);
       break;
-    case UiHit::Kind::HourMinus:
-    case UiHit::Kind::HourPlus:
-    case UiHit::Kind::MinuteMinus:
-    case UiHit::Kind::MinutePlus: {
-      int delta = 0;
-      if (hit.kind == UiHit::Kind::HourMinus) delta = -60;
-      if (hit.kind == UiHit::Kind::HourPlus) delta = 60;
-      if (hit.kind == UiHit::Kind::MinuteMinus) delta = -1;
-      if (hit.kind == UiHit::Kind::MinutePlus) delta = 1;
-      if (!boardAdjustClockMinutes(delta)) {
-        BoardClockInfo c = boardClock();
-        uint16_t y = c.valid ? c.year : 2026;
-        uint8_t mo = c.valid ? c.month : 1;
-        uint8_t d = c.valid ? c.day : 1;
-        uint8_t h = c.valid ? c.hour : 12;
-        uint8_t mi = c.valid ? c.minute : 0;
-        int total = static_cast<int>(h) * 60 + static_cast<int>(mi) + delta;
-        while (total < 0) total += 24 * 60;
-        total %= 24 * 60;
-        boardSetClock(y, mo, d, static_cast<uint8_t>(total / 60), static_cast<uint8_t>(total % 60));
-      }
-      uiDrawShade(gSpace);
-      break;
-    }
-    case UiHit::Kind::CleanEveryMinus:
-    case UiHit::Kind::CleanEveryPlus:
-      // Moved to Settings page.
-      break;
     case UiHit::Kind::ScrubNow:
       canvasRequestCleanRefresh();
       uiDrawShade(gSpace);
@@ -744,6 +716,20 @@ void handleTouch(int x, int y) {
       boardSetClock(static_cast<uint16_t>(y), static_cast<uint8_t>(mo), static_cast<uint8_t>(d),
                     static_cast<uint8_t>(h), static_cast<uint8_t>(mi));
     };
+    auto adjustTime = [&](int deltaMin) {
+      if (!boardAdjustClockMinutes(deltaMin)) {
+        BoardClockInfo c = boardClock();
+        uint16_t y = c.valid ? c.year : 2026;
+        uint8_t mo = c.valid ? c.month : 1;
+        uint8_t d = c.valid ? c.day : 1;
+        uint8_t h = c.valid ? c.hour : 12;
+        uint8_t mi = c.valid ? c.minute : 0;
+        int total = static_cast<int>(h) * 60 + static_cast<int>(mi) + deltaMin;
+        while (total < 0) total += 24 * 60;
+        total %= 24 * 60;
+        boardSetClock(y, mo, d, static_cast<uint8_t>(total / 60), static_cast<uint8_t>(total % 60));
+      }
+    };
 
     if (hit.kind == UiHit::Kind::Back) {
       showShade();
@@ -768,6 +754,18 @@ void handleTouch(int x, int y) {
       uiDrawSettings(gSpace);
     } else if (hit.kind == UiHit::Kind::CleanEveryPlus) {
       boardSetCleanEvery(boardCleanEvery() + 1);
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::HourMinus) {
+      adjustTime(-60);
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::HourPlus) {
+      adjustTime(60);
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::MinuteMinus) {
+      adjustTime(-1);
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::MinutePlus) {
+      adjustTime(1);
       uiDrawSettings(gSpace);
     } else if (hit.kind == UiHit::Kind::YearMinus) {
       adjustDate(-1, 0, 0);
@@ -857,6 +855,10 @@ void setup() {
 
   uiDrawSplash();
   delay(1200);
+  // Full white wipe so the splash does not ghost over the first home frame.
+  canvasClear();
+  canvasPresent(EInkDisplay::FULL_REFRESH);
+  delay(80);
 
   showHome();
   noteActivity();
