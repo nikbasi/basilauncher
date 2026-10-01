@@ -59,7 +59,7 @@ bool pickAndDrawRandom() {
   return false;
 }
 
-// Aurora-style caption chip. `top` places it near the status area; otherwise bottom.
+// Caption chip. `top` places it near the status area; otherwise bottom.
 void drawSleepBanner(const char* text, bool top, int scale) {
   if (!text || !text[0]) return;
   if (scale < 1) scale = 1;
@@ -94,7 +94,7 @@ void armBootWakeup() {
   if (pin < 0) return;
   const bool activeHigh = BoardConfig::ACTIVE.input.powerActiveHigh;
   pinMode(pin, activeHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
-  // Clear inherited light-sleep wake sources (same reason Aurora does).
+  // Clear inherited light-sleep wake sources.
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 #if SOC_PM_SUPPORT_EXT1_WAKEUP
   esp_sleep_enable_ext1_wakeup(1ULL << pin,

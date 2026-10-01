@@ -102,7 +102,7 @@ bool boardInitSd() {
 }
 
 void boardInitPower() {
-  // A prior CrossPoint HIZ session can leave the BQ25896 input disabled so USB
+  // A prior guest HIZ session can leave the BQ25896 input disabled so USB
   // enumerates but never charges — clear that on every hub boot.
   const bool hizCleared = gBattery.clearChargerInputHiZ();
   uint8_t reg00 = 0, reg0b = 0;

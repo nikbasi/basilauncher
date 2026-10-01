@@ -1,95 +1,123 @@
 # Basilauncher
 
-Aurora-style reboot-gated firmware hub for the **LilyGO T5 E-Paper S3 Pro**.
+**Multi-app firmware hub for the [LilyGO T5 E-Paper S3 Pro](https://www.lilygo.cc/)**
 
-## Role
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-ESP32--S3-blue.svg)](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/)
+[![Board](https://img.shields.io/badge/board-LilyGO%20T5%20E--Paper%20S3%20Pro-black.svg)](https://github.com/Xinyuan-LilyGO/T5-e-paper-s3)
+[![Version](https://img.shields.io/badge/version-1.4.20-green.svg)](platformio.ini)
 
-Basilauncher lives in the **factory** flash partition and is **never overwritten** by the
-on-device UI. Guest apps install only into empty `ota_0`…`ota_3` slots (best-fit). To free
-space, tap **Clear** on a slot.
+Basilauncher is a **factory-partition launcher**: it boots first after reset, lets you
+install guest firmwares from the SD card into flash slots, and comes back when you
+**double-press RST** — without patching those guests.
 
-## Returning to the launcher
+If Basilauncher is useful on your T5 Pro, a GitHub star helps others find it.
 
-The custom bootloader in [`bootloader/`](bootloader/) decides by reset cause, so it
-works for any guest firmware without changes:
+## Hardware
 
-| Reset | Boots |
-|-------|-------|
-| **RST pressed twice** within 0.8 s | Basilauncher (otadata erased) |
-| RST pressed once, power-on | The same app, after a 0.8 s wait |
-| USB reset from a host, app's own restart, deep-sleep wake, watchdog, crash | The same app, no wait |
+| | |
+|---|---|
+| **Board** | LilyGO T5 E-Paper S3 Pro (`T5-ePaper-S3-Pro`, ESP32-S3 + 8 MB PSRAM) |
+| **Panel** | 960×540 e-paper (UI is portrait 540×960) |
+| **Touch** | GT911 |
+| **Power** | BQ25896 charger + fuel gauge |
+| **Storage** | microSD (apps under `/firmware`, sleep art under `/sleep`) |
 
-**Double-press RST** from any app to get back here; a single stray press only
-restarts the app. The pending first press is a flag word in the sector at
-`0x7000`, so the bootloader image must stay below 28 KB (`flashbl` checks this).
+Also searchable as: *LilyGO T5 S3 Pro*, *T5 epaper S3 Pro*, *ESP32-S3 e-ink launcher*.
 
-## Partition map (16 MB)
+## Features
 
-| Slot | Partition | Size | Notes |
-|------|-----------|------|--------|
-| Launcher | `factory` | 1.5 MB | Protected |
-| A | `ota_0` | 6 MB | Fits CrossPoint |
-| B | `ota_1` | 2.5 MB | Smaller apps |
-| C | `ota_2` | 2.5 MB | Smaller apps |
-| D | `ota_3` | 2.25 MB | Smaller apps |
-| (shared) | `spiffs` | 1 MB | LittleFS for Meshtastic-style guests |
+- **Four guest slots** (`ota_0`…`ota_3`) — best-fit install from `/firmware/*.bin`
+- **Protected factory hub** — on-device UI never overwrites the launcher
+- **RST double-press** custom bootloader — return from any guest without app changes
+- **Files explorer** — browse SD, install bins, view BMPs, edit text, clipboard
+- **Quick settings shade** — frontlight, scrub, jump to Settings
+- **Sleep screensaver** — random BMPs from `/sleep` or `/.sleep`, short BOOT to change, hold BOOT to wake
+- **Clock + battery** — RTC time, charge lightning / USB plug cues
+- **1 MB `spiffs`** — so Meshtastic-style guests can mount InternalFS
 
-Status bar always shows **version** and **free / total guest flash**.
-
-## Build / flash
-
-Uses the same FreeInk display path as CrossPoint `lilygo_pro` (`BoardT5S3` +
-`LgfxEpd` + M5GFX). Do **not** use FastEPD.
+## Quick start
 
 ```bash
+git clone --recurse-submodules https://github.com/nikbasi/basilauncher.git
 cd basilauncher
 pio run -e basilauncher
-pio run -e basilauncher -t upload --upload-port /dev/cu.usbmodem101
+pio run -e basilauncher -t upload   # factory @ 0x10000 only; guests untouched
 ```
 
-Upload writes **only** the factory image at `0x10000` and resets otadata.
-
-If partitions changed (first flash of 1.0.9+), rewrite the table once (then flash
-the custom bootloader below, since this writes the stock one):
+**First flash on a blank board** (partition table + custom bootloader once):
 
 ```bash
+# See docs/flashing.md for the full recipe and warnings.
 python3 -m esptool --chip esp32s3 -p /dev/cu.usbmodem101 write-flash \
-  0x0 .pio/build/basilauncher/bootloader.bin \
-  0x8000 .pio/build/basilauncher/partitions.bin \
+  0x0     bootloader/basil-bootloader.bin \
+  0x8000  .pio/build/basilauncher/partitions.bin \
   0x10000 .pio/build/basilauncher/firmware.bin
 python3 -m esptool --chip esp32s3 -p /dev/cu.usbmodem101 erase-region 0xe000 0x2000
 ```
 
-Custom bootloader (only `0x0`; apps, slots and otadata are untouched):
+More detail: **[docs/flashing.md](docs/flashing.md)** · **[docs/partitions.md](docs/partitions.md)** · **[docs/guest-apps.md](docs/guest-apps.md)**
 
-```bash
-python3 -m esptool --chip esp32s3 -p /dev/cu.usbmodem101 write-flash 0x0 bootloader/basil-bootloader.bin
+## Returning to the launcher
+
+| Reset | Boots |
+|-------|-------|
+| **RST pressed twice** within ~0.8 s | Basilauncher (otadata cleared) |
+| RST once / power-on | Same app (short wait after first press) |
+| USB host reset, app restart, deep-sleep wake, WDT, crash | Same app, no wait |
+
+Double-press **RST** from any guest to get back here.
+
+## SD card layout
+
 ```
-
-Rebuilding it: `cd bootloader && pio run` configures the ESP-IDF bootloader
-subproject (the stub app step fails on a PlatformIO SCons issue and is not needed),
-then `ninja` in `.pio/build/bootloader/bootloader` and `esptool elf2image
---flash-mode dio --flash-freq 80m --flash-size 16MB` produce `bootloader.bin`.
-
-## SD layout
-
-```
-/firmware/
+/firmware/          # .bin images to install into empty slots
   crosspoint-….bin
-  flashcards-….bin
+  meshtastic-….bin
   …
+/sleep/             # optional portrait BMPs for the screensaver
+  01_forest.bmp
 ```
 
-Tap a file → installs into the **smallest empty slot that fits**. If none fit, Clear a slot.
+Tap a file in **Files** → installs into the **smallest empty slot that fits**.
+Clear a slot from the home cards when you need space.
 
-## UI
+## UI sketch
 
-Portrait 540×960 with ASC16 (8×16) glyphs.
+```
+┌─────────────────────────────┐
+│  12:34  Apr 1        ⚡ 87% │
+│  Basilauncher  v1.4.20      │
+│           ⌄  pill           │  ← pull for Quick settings
+├─────────────────────────────┤
+│  Apps                       │
+│  ┌ A CrossPoint        ▶  ┐ │
+│  ├ B Meshtastic        ▶  ┤ │
+│  ├ C (empty)  Assign      ┤ │
+│  └ D Flashcards        ▶  ┘ │
+│  [ Files ]      free 4.1 MB │
+└─────────────────────────────┘
+```
 
-- **Home** — status (clock, battery, version, free flash) + four guest slot cards.
-  Pull down / tap the top bar for **Quick settings**.
-- **Quick settings** — frontlight brightness + on/off, hour/minute adjust. Swipe up or Done to close.
-- **Install** — file picker (best-fit). Empty slot **Assign** targets that slot.
-- **Settings** — about + power off.
+Photos welcome in `docs/images/` — PRs appreciated.
 
-Launcher partition stays protected; install never overwrites an occupied slot.
+## Build notes
+
+Uses FreeInk display path: `BoardT5S3` + `LgfxEpd` + M5GFX (not FastEPD — FastEPD’s
+T5 Pro panel path drives the frontlight pin as data).
+
+```ini
+; platformio.ini upload writes ONLY factory @ 0x10000, then clears otadata
+```
+
+SDK: submodule [`nikbasi/freeink-sdk`](https://github.com/nikbasi/freeink-sdk) (FreeInk-derived, with LilyGO T5 charge / clean-bank fixes used by this hub).
+
+## License
+
+MIT — see [LICENSE](LICENSE). FreeInk SDK is MIT (FreeInk / OpenX4 lineage); M5GFX has its own license via PlatformIO.
+
+## Related
+
+- [LilyGO T5 e-Paper S3](https://github.com/Xinyuan-LilyGO/T5-e-paper-s3)
+- [FreeInk](https://freeink.org/) / [freeink-sdk](https://github.com/nikbasi/freeink-sdk)
+- Guest examples often used on this board: CrossPoint reader, Meshtastic InkHUD, Flashcards, GameBoy ports

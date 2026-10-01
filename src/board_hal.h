@@ -66,6 +66,6 @@ bool boardPollSwipe(int& x0, int& y0, int& x1, int& y1);
 bool boardTouchHeld(int& x, int& y);
 void boardSuppressTouch();
 
-// BOOT / power key (GPIO0 on LilyGO T5 S3 Pro) — same physical key Aurora uses.
+// BOOT / power key (GPIO0 on LilyGO T5 S3 Pro) — power / BOOT key on this board.
 bool boardPowerPressed();
 unsigned long boardPowerHeldMs();

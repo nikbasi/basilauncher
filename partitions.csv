@@ -1,5 +1,5 @@
 # Basilauncher partition map (16MB). Factory is the launcher — never written by the app UI.
-# Guest apps live only in ota_0..ota_3. One large slot (~6MB) fits CrossPoint; smaller
+# Guest apps live only in ota_0..ota_3. One large slot (~6MB) fits larger readers; smaller
 # slots take lighter firmwares. A 1MB spiffs/LittleFS partition is required for guests
 # that expect Meshtastic-style InternalFS (label "spiffs"); without it they hang on boot.
 # Name,   Type, SubType, Offset,  Size, Flags

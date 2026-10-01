@@ -4,3 +4,8 @@
 .vscode/launch.json
 .vscode/ipch
 .DS_Store
+**/__pycache__/
+*.orig
+bootloader-backup*.bin
+bootloader/sdkconfig.bootloader
+platformio.local.ini

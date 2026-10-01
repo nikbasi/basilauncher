@@ -4,7 +4,7 @@
 #include <EInkDisplay.h>
 
 // Logical portrait UI. FreeInk framebuffer is native landscape 960x540;
-// canvas maps logical → physical with CrossPoint's Portrait transform
+// canvas maps logical → physical with a 90° CW portrait transform
 // (90° CW: phyX=ly, phyY=539-lx). Matches how the reader holds the T5
 // (USB / home button at the bottom).
 constexpr int kScreenW = 540;

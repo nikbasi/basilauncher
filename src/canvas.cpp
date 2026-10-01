@@ -10,7 +10,7 @@ namespace {
 constexpr int kPhysW = 960;
 constexpr int kPhysH = 540;
 
-// CrossPoint Portrait: logical (lx,ly) on 540x960 → panel (px,py) on 960x540.
+// Portrait mapping: logical (lx,ly) on 540x960 → panel (px,py) on 960x540.
 inline void toPhysical(int lx, int ly, int& px, int& py) {
   px = ly;
   py = (kPhysH - 1) - lx;
@@ -110,7 +110,7 @@ int canvasTitleCellH() {
 void canvasPresent(EInkDisplay::RefreshMode mode) { display.displayBuffer(mode, false); }
 
 void canvasPresentAuto() {
-  // Same cadence as Aurora: FAST for ordinary UI, HALF every few frames to
+  // FAST/HALF cadence: FAST for ordinary UI, HALF every few frames to
   // scrub. Consecutive HALF/FULL on this panel skip unchanged white and leave
   // faint imprints of the previous screen.
   //
@@ -298,7 +298,7 @@ void canvasDrawString(int x, int y, const char* text, bool black, int scale) {
 }
 
 void canvasTouchToLogical(float nx, float ny, int& x, int& y) {
-  // Inverse of CrossPoint Portrait tapToLogical.
+  // Inverse of portrait tap mapping.
   const int px = static_cast<int>(nx * static_cast<float>(kPhysW - 1) + 0.5f);
   const int py = static_cast<int>(ny * static_cast<float>(kPhysH - 1) + 0.5f);
   x = (kPhysH - 1) - py;
