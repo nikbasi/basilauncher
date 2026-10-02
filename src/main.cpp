@@ -26,6 +26,9 @@ SlotInfo gSlots[kSlotCount];
 FlashSpace gSpace;
 int gScroll = 0;
 int gSelected = -1;
+std::vector<int> gSelectedEntries;
+std::vector<std::string> gSelectedPaths;
+bool gMultiSelect = false;
 int gAssignSlot = -1;
 ExplorerMode gExplorerMode = ExplorerMode::Browse;
 bool gSheetOpen = false;
@@ -43,7 +46,7 @@ bool gOskSymbols = false;
 
 enum class ConfirmAction { None, Delete };
 ConfirmAction gConfirmAction = ConfirmAction::None;
-char gConfirmPath[kFilePathMax] = {};
+std::vector<std::string> gConfirmPaths;
 
 bool gMessageReturnExplorer = false;
 
@@ -57,6 +60,54 @@ struct ProgressCtx {
 void refreshSlots() {
   appsAllSlots(gSlots);
   gSpace = appsFlashSpace();
+}
+
+void syncExplorerSelection() {
+  std::vector<std::string> existingPaths;
+  std::vector<int> indices;
+  existingPaths.reserve(gSelectedPaths.size());
+  indices.reserve(gSelectedPaths.size());
+  for (const auto& selectedPath : gSelectedPaths) {
+    for (int i = 0; i < static_cast<int>(gEntries.size()); ++i) {
+      if (gEntries[i].path == selectedPath) {
+        existingPaths.push_back(selectedPath);
+        indices.push_back(i);
+        break;
+      }
+    }
+  }
+  gSelectedPaths = std::move(existingPaths);
+  gSelectedEntries = std::move(indices);
+  gSelected = gSelectedEntries.size() == 1 ? gSelectedEntries.front() : -1;
+}
+
+void clearExplorerSelection() {
+  gSelectedEntries.clear();
+  gSelectedPaths.clear();
+  gSelected = -1;
+  gMultiSelect = false;
+}
+
+void selectOnlyExplorerEntry(int index) {
+  gSelectedPaths.clear();
+  if (index >= 0 && index < static_cast<int>(gEntries.size())) {
+    gSelectedPaths.push_back(gEntries[index].path);
+  }
+  gMultiSelect = false;
+  syncExplorerSelection();
+}
+
+void toggleExplorerEntry(int index) {
+  if (index < 0 || index >= static_cast<int>(gEntries.size())) return;
+  const std::string& path = gEntries[index].path;
+  auto it = std::find(gSelectedPaths.begin(), gSelectedPaths.end(), path);
+  if (it == gSelectedPaths.end()) gSelectedPaths.push_back(path);
+  else gSelectedPaths.erase(it);
+  syncExplorerSelection();
+}
+
+std::vector<std::string> selectedExplorerPaths() {
+  return gSelectedPaths;
 }
 
 // Soft maintenance scrub while the hub sits idle on Home.
@@ -83,7 +134,7 @@ void showHome() {
   gScreen = Screen::Home;
   gAssignSlot = -1;
   gScroll = 0;
-  gSelected = -1;
+  clearExplorerSelection();
   gSheetOpen = false;
   refreshSlots();
   uiDrawHome(gSlots, gSpace);
@@ -104,7 +155,7 @@ size_t installMaxBytes() {
 void buildExplorerList() {
   if (!SD.exists(gPath) && strcmp(gPath, "/firmware") == 0) SD.mkdir("/firmware");
   gEntries = appsScanDir(gPath);
-  if (gSelected >= static_cast<int>(gEntries.size())) gSelected = -1;
+  syncExplorerSelection();
 }
 
 void redrawExplorer(bool viewportOnly = false) {
@@ -115,9 +166,12 @@ void redrawExplorer(bool viewportOnly = false) {
   st.maxBytes = installMaxBytes();
   st.scroll = gScroll;
   st.selected = gSelected;
+  st.selectedIndices = &gSelectedEntries;
+  st.multiSelect = gMultiSelect;
   st.sheetOpen = gSheetOpen;
   st.clipboardHas = fileClipboard().hasItem;
   st.clipboardCut = fileClipboard().isCut;
+  st.clipboardCount = fileClipboard().paths.size();
   st.currentPath = gPath;
   gScreen = Screen::Explorer;
   if (viewportOnly && !st.sheetOpen) uiRedrawExplorerViewport(gEntries, st);
@@ -128,7 +182,7 @@ void showExplorer(ExplorerMode mode, int targetSlot) {
   gExplorerMode = mode;
   gAssignSlot = targetSlot;
   gScroll = 0;
-  gSelected = -1;
+  clearExplorerSelection();
   gSheetOpen = false;
   refreshSlots();
 
@@ -154,9 +208,9 @@ void enterDir(const char* path) {
   if (!path || !path[0]) return;
   snprintf(gPath, sizeof(gPath), "%s", path);
   rememberBrowsePath();
+  clearExplorerSelection();
   buildExplorerList();
   gScroll = 0;
-  gSelected = -1;
   redrawExplorer();
 }
 
@@ -386,7 +440,7 @@ void finishTextEdit(bool save) {
     return;
   }
   buildExplorerList();
-  gSelected = -1;
+  clearExplorerSelection();
   redrawExplorer();
 }
 
@@ -417,56 +471,77 @@ void openSelected() {
 }
 
 void clipboardFromSelection(bool cut) {
-  if (gSelected < 0 || gSelected >= static_cast<int>(gEntries.size())) {
-    showMessage("Select first", "Tap a file or folder, then Copy or Cut.", true);
+  const auto paths = selectedExplorerPaths();
+  if (paths.empty()) {
+    showMessage("Select first", "Select one or more items, then Copy or Cut.", true);
     return;
   }
-  fileClipboardSet(gEntries[gSelected].path.c_str(), cut);
+  fileClipboardSet(paths, cut);
+  clearExplorerSelection();
+  gSheetOpen = false;
   redrawExplorer();
 }
 
 void doPaste() {
   char err[48];
   if (!fileClipboardPaste(gPath, err, sizeof(err))) {
+    // A storage error can happen after part of a batch was written or moved.
+    // Rescan so the view always matches the SD card's actual state.
+    buildExplorerList();
     showMessage("Paste", err, true);
     return;
   }
+  clearExplorerSelection();
   buildExplorerList();
   redrawExplorer();
 }
 
 void askDelete() {
-  if (gSelected < 0 || gSelected >= static_cast<int>(gEntries.size())) {
-    showMessage("Select first", "Tap a file or folder, then Delete.", true);
+  const auto paths = selectedExplorerPaths();
+  if (paths.empty()) {
+    showMessage("Select first", "Select one or more items, then Delete.", true);
     return;
   }
-  const DirEntry& e = gEntries[gSelected];
-  if (e.isDir && !fileOpsDirEmpty(e.path.c_str())) {
-    showMessage("Not empty", "Only empty folders can be deleted.", true);
-    return;
+  for (const auto& path : paths) {
+    if (fileOpsIsDir(path.c_str()) && !fileOpsDirEmpty(path.c_str())) {
+      showMessage("Not empty", "Only empty folders can be deleted.", true);
+      return;
+    }
   }
   gConfirmAction = ConfirmAction::Delete;
-  snprintf(gConfirmPath, sizeof(gConfirmPath), "%s", e.path.c_str());
+  gConfirmPaths = paths;
   gScreen = Screen::Confirm;
   char body[96];
-  snprintf(body, sizeof(body), "Delete %s?", e.name.c_str());
+  if (paths.size() == 1) {
+    char base[64];
+    if (!fileOpsBasename(paths.front().c_str(), base, sizeof(base))) snprintf(base, sizeof(base), "item");
+    snprintf(body, sizeof(body), "Delete %s?", base);
+  } else {
+    snprintf(body, sizeof(body), "Delete %u selected items?", static_cast<unsigned>(paths.size()));
+  }
   uiDrawConfirm("Delete", body);
 }
 
 void confirmYes() {
   if (gConfirmAction == ConfirmAction::Delete) {
-    if (!fileOpsRemove(gConfirmPath)) {
-      showMessage("Error", "Delete failed.", true);
-      gConfirmAction = ConfirmAction::None;
-      return;
+    for (const auto& path : gConfirmPaths) {
+      if (!fileOpsRemove(path.c_str())) {
+        clearExplorerSelection();
+        buildExplorerList();
+        showMessage("Error", "Delete failed; remaining items were kept.", true);
+        gConfirmAction = ConfirmAction::None;
+        gConfirmPaths.clear();
+        return;
+      }
+      auto& clip = fileClipboard();
+      clip.paths.erase(std::remove(clip.paths.begin(), clip.paths.end(), path), clip.paths.end());
+      if (clip.paths.empty()) fileClipboardClear();
     }
-    if (fileClipboard().hasItem && strcmp(fileClipboard().path, gConfirmPath) == 0) {
-      fileClipboardClear();
-    }
-    gSelected = -1;
+    clearExplorerSelection();
     buildExplorerList();
   }
   gConfirmAction = ConfirmAction::None;
+  gConfirmPaths.clear();
   redrawExplorer();
 }
 
@@ -601,11 +676,27 @@ void handleShadeHit(const UiHit& hit) {
   }
 }
 
+void handleExplorerLongPress(int index) {
+  if (index < 0 || index >= static_cast<int>(gEntries.size())) return;
+  if (!gMultiSelect) {
+    clearExplorerSelection();
+    gMultiSelect = true;
+  }
+  toggleExplorerEntry(index);
+  gSheetOpen = false;
+  redrawExplorer(true);
+}
+
 void handleExplorerHit(const UiHit& hit) {
   const int visible = uiExplorerVisibleRows();
   switch (hit.kind) {
     case UiHit::Kind::Back:
-      showHome();
+      if (gMultiSelect) {
+        clearExplorerSelection();
+        redrawExplorer(true);
+      } else {
+        showHome();
+      }
       break;
     case UiHit::Kind::GoUp:
       goUpDir();
@@ -623,16 +714,13 @@ void handleExplorerHit(const UiHit& hit) {
       }
       break;
     case UiHit::Kind::SelectEntry:
-      if (hit.index == gSelected) {
-        openSelected();
-      } else {
-        gSelected = hit.index;
-        gSheetOpen = false;
-        redrawExplorer(true);
-      }
+      if (gMultiSelect) toggleExplorerEntry(hit.index);
+      else selectOnlyExplorerEntry(hit.index);
+      gSheetOpen = false;
+      redrawExplorer(true);
       break;
     case UiHit::Kind::ExplorerOpen:
-      openSelected();
+      if (gSelectedEntries.size() == 1) openSelected();
       break;
     case UiHit::Kind::ExplorerMore:
       gSheetOpen = !gSheetOpen;
@@ -656,8 +744,9 @@ void handleExplorerHit(const UiHit& hit) {
       break;
     case UiHit::Kind::ExplorerRename: {
       gSheetOpen = false;
-      if (gSelected < 0 || gSelected >= static_cast<int>(gEntries.size())) {
-        showMessage("Select first", "Tap a file or folder, then Rename.", true);
+      if (gSelectedEntries.size() != 1 || gSelected < 0 ||
+          gSelected >= static_cast<int>(gEntries.size())) {
+        showMessage("Select one", "Rename works with one selected item.", true);
         break;
       }
       const DirEntry& e = gEntries[gSelected];
@@ -766,6 +855,7 @@ void handleTouch(int x, int y) {
     if (hit.kind == UiHit::Kind::ConfirmYes) confirmYes();
     else if (hit.kind == UiHit::Kind::ConfirmNo) {
       gConfirmAction = ConfirmAction::None;
+      gConfirmPaths.clear();
       redrawExplorer();
     }
     return;
@@ -904,7 +994,7 @@ void handleTouch(int x, int y) {
     const bool canUp = !appsIsRootDir(gPath);
     const UiHit hit =
         uiHitExplorer(x, y, static_cast<int>(gEntries.size()), gScroll, canUp, gSheetOpen,
-                      fileClipboard().hasItem);
+                      fileClipboard().hasItem, static_cast<int>(gSelectedEntries.size()));
     if (hit.kind == UiHit::Kind::OpenShade) {
       showShade();
       return;
@@ -990,6 +1080,22 @@ void loop() {
   } else if (bootSleepArmed && boardPowerHeldMs() > 1500 && gScreen != Screen::Progress) {
     bootSleepArmed = false;
     enterSleepWithScreensaver();
+  }
+
+  // Long presses are classified and queued by the input task, so they survive
+  // blocking e-ink refreshes and their release cannot become a normal tap.
+  int longPressX = 0, longPressY = 0;
+  while (boardPollLongPress(longPressX, longPressY)) {
+    if (gScreen == Screen::Explorer && !gSheetOpen) {
+      const bool canUp = !appsIsRootDir(gPath);
+      const UiHit held =
+          uiHitExplorer(longPressX, longPressY, static_cast<int>(gEntries.size()), gScroll, canUp, false,
+                        fileClipboard().hasItem, static_cast<int>(gSelectedEntries.size()));
+      if (held.kind == UiHit::Kind::SelectEntry) {
+        noteActivity();
+        handleExplorerLongPress(held.index);
+      }
+    }
   }
 
   int x0 = 0, y0 = 0, x1 = 0, y1 = 0;

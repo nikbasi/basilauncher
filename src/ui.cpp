@@ -729,6 +729,48 @@ void explorerSheetCell(int index, int& x, int& y, int& w, int& h) {
   y = gridTop + row * (h + kSheetGap);
 }
 
+int explorerSelectionCount(const ExplorerDrawState& st) {
+  if (st.selectedIndices) return static_cast<int>(st.selectedIndices->size());
+  return st.selected >= 0 ? 1 : 0;
+}
+
+bool explorerEntrySelected(const ExplorerDrawState& st, int index) {
+  if (!st.selectedIndices) return index == st.selected;
+  return std::find(st.selectedIndices->begin(), st.selectedIndices->end(), index) !=
+         st.selectedIndices->end();
+}
+
+void drawExplorerDock(const ExplorerDrawState& st) {
+  const int dockY = kScreenH - kExplorerDockH;
+  canvasFillRect(0, dockY, kScreenW, kExplorerDockH, false);
+  canvasDrawLine(0, dockY, kScreenW - 1, dockY, true);
+
+  const int btnH = 48;
+  const int btnY = dockY + (kExplorerDockH - btnH) / 2;
+  int textX = kPad;
+  if (st.clipboardHas) {
+    drawIconBtn(kPad, btnY, 64, btnH, drawIconPaste, true);
+    textX += 74;
+  }
+
+  const int count = explorerSelectionCount(st);
+  if (count > 0) {
+    char selected[28];
+    if (count == 1) snprintf(selected, sizeof(selected), "1 selected");
+    else snprintf(selected, sizeof(selected), "%d selected", count);
+    canvasDrawString(textX, btnY + (btnH - canvasTextHeight(kSmall)) / 2, selected, true, kSmall);
+  } else if (st.multiSelect) {
+    canvasDrawString(textX, btnY + (btnH - canvasTextHeight(kSmall)) / 2, "Select items", true, kSmall);
+  }
+
+  const int menuX = kScreenW - kPad - 64;
+  if (count == 1 && !st.sheetOpen) {
+    constexpr int openW = 112;
+    drawFilledBtn(menuX - 12 - openW, btnY, openW, btnH, "Open");
+  }
+  drawIconBtn(menuX, btnY, 64, btnH, drawIconMenu, st.sheetOpen);
+}
+
 void drawExplorerViewport(const std::vector<DirEntry>& entries, const ExplorerDrawState& st) {
   const int listTop = explorerListTop();
   const int listBottom = explorerListBottom();
@@ -745,7 +787,7 @@ void drawExplorerViewport(const std::vector<DirEntry>& entries, const ExplorerDr
     for (int i = start; i < end; ++i) {
       const DirEntry& e = entries[i];
       const int rowY = listTop + (i - start) * kExplorerRowH;
-      const bool sel = (i == st.selected);
+      const bool sel = explorerEntrySelected(st, i);
       if (sel) canvasFillRoundRect(kPad, rowY, cardW, kExplorerRowH - 8, 12, true);
       else canvasDrawRoundRect(kPad, rowY, cardW, kExplorerRowH - 8, 12, true);
 
@@ -836,30 +878,20 @@ void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawStat
     canvasDrawString(kScreenW - kPad - canvasTextWidth(hint, kSmall), upY + (upH - canvasTextHeight(kSmall)) / 2,
                      hint, true, kSmall);
   } else if (st.clipboardHas) {
-    const char* clip = st.clipboardCut ? "cut ready" : "copied";
+    char clip[24];
+    if (st.clipboardCount > 1) {
+      snprintf(clip, sizeof(clip), st.clipboardCut ? "%u cut" : "%u copied",
+               static_cast<unsigned>(st.clipboardCount));
+    } else {
+      snprintf(clip, sizeof(clip), "%s", st.clipboardCut ? "cut ready" : "copied");
+    }
     canvasDrawString(kScreenW - kPad - canvasTextWidth(clip, kSmall), upY + (upH - canvasTextHeight(kSmall)) / 2,
                      clip, true, kSmall);
   }
 
   drawExplorerViewport(entries, st);
 
-  // Bottom: Paste (when ready) + actions menu only.
-  const int dockY = kScreenH - kExplorerDockH;
-  canvasDrawLine(0, dockY, kScreenW - 1, dockY, true);
-  canvasFillRect(0, dockY + 1, kScreenW, kExplorerDockH - 1, false);
-
-  const int btnH = 48;
-  const int btnY = dockY + (kExplorerDockH - btnH) / 2;
-  int bx = kPad;
-  if (st.clipboardHas) {
-    drawIconBtn(bx, btnY, 64, btnH, drawIconPaste, true);
-    bx += 74;
-  }
-  if (st.selected >= 0 && !st.sheetOpen) {
-    const char* tip = "tap again to open";
-    canvasDrawString(bx + 4, btnY + (btnH - canvasTextHeight(kSmall)) / 2, tip, true, kSmall);
-  }
-  drawIconBtn(kScreenW - kPad - 64, btnY, 64, btnH, drawIconMenu, st.sheetOpen);
+  drawExplorerDock(st);
 
   if (st.sheetOpen) {
     const int sheetH = explorerSheetH();
@@ -892,29 +924,14 @@ void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawStat
 
 void uiRedrawExplorerViewport(const std::vector<DirEntry>& entries, const ExplorerDrawState& st) {
   drawExplorerViewport(entries, st);
-
-  const int dockY = kScreenH - kExplorerDockH;
-  canvasFillRect(0, dockY, kScreenW, kExplorerDockH, false);
-  canvasDrawLine(0, dockY, kScreenW - 1, dockY, true);
-  const int btnH = 48;
-  const int btnY = dockY + (kExplorerDockH - btnH) / 2;
-  int bx = kPad;
-  if (st.clipboardHas) {
-    drawIconBtn(bx, btnY, 64, btnH, drawIconPaste, true);
-    bx += 74;
-  }
-  if (st.selected >= 0) {
-    const char* tip = "tap again to open";
-    canvasDrawString(bx + 4, btnY + (btnH - canvasTextHeight(kSmall)) / 2, tip, true, kSmall);
-  }
-  drawIconBtn(kScreenW - kPad - 64, btnY, 64, btnH, drawIconMenu, false);
+  drawExplorerDock(st);
 
   const int top = explorerListTop();
   canvasPresentFor(CanvasRefreshIntent::InteractiveViewport, {0, top, kScreenW, kScreenH - top});
 }
 
 UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool sheetOpen,
-                    bool clipboardHas) {
+                    bool clipboardHas, int selectedCount) {
   UiHit hit;
 
   if (!sheetOpen && y < statusBarH()) {
@@ -973,7 +990,12 @@ UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool
       hit.kind = UiHit::Kind::ExplorerPaste;
       return hit;
     }
-    if (hitIconBtn(x, y, kScreenW - kPad - 64, btnY, 64, btnH)) {
+    const int menuX = kScreenW - kPad - 64;
+    if (selectedCount == 1 && hitIconBtn(x, y, menuX - 12 - 112, btnY, 112, btnH)) {
+      hit.kind = UiHit::Kind::ExplorerOpen;
+      return hit;
+    }
+    if (hitIconBtn(x, y, menuX, btnY, 64, btnH)) {
       hit.kind = UiHit::Kind::ExplorerMore;
       return hit;
     }

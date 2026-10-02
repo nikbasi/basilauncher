@@ -28,7 +28,7 @@ bool pathIsUnder(const char* path, const char* ancestor) {
 FileClipboard& fileClipboard() { return gClip; }
 
 void fileClipboardClear() {
-  gClip.path[0] = 0;
+  gClip.paths.clear();
   gClip.isCut = false;
   gClip.hasItem = false;
 }
@@ -38,7 +38,17 @@ void fileClipboardSet(const char* path, bool cut) {
     fileClipboardClear();
     return;
   }
-  snprintf(gClip.path, sizeof(gClip.path), "%s", path);
+  gClip.paths = {path};
+  gClip.isCut = cut;
+  gClip.hasItem = true;
+}
+
+void fileClipboardSet(const std::vector<std::string>& paths, bool cut) {
+  fileClipboardClear();
+  for (const auto& path : paths) {
+    if (!path.empty()) gClip.paths.push_back(path);
+  }
+  if (gClip.paths.empty()) return;
   gClip.isCut = cut;
   gClip.hasItem = true;
 }
@@ -187,7 +197,7 @@ bool fileClipboardPaste(const char* destDir, char* err, size_t errLen) {
   auto setErr = [&](const char* msg) {
     if (err && errLen) snprintf(err, errLen, "%s", msg ? msg : "Failed");
   };
-  if (!gClip.hasItem || !gClip.path[0]) {
+  if (!gClip.hasItem || gClip.paths.empty()) {
     setErr("Clipboard empty");
     return false;
   }
@@ -195,57 +205,73 @@ bool fileClipboardPaste(const char* destDir, char* err, size_t errLen) {
     setErr("Bad folder");
     return false;
   }
-  if (!fileOpsExists(gClip.path)) {
-    setErr("Source missing");
-    fileClipboardClear();
-    return false;
-  }
 
-  char base[96];
-  if (!fileOpsBasename(gClip.path, base, sizeof(base))) {
-    setErr("Bad name");
-    return false;
-  }
+  struct PasteItem {
+    std::string source;
+    std::string dest;
+  };
+  std::vector<PasteItem> pending;
+  pending.reserve(gClip.paths.size());
 
-  char dest[kFilePathMax];
-  if (!fileOpsJoin(destDir, base, dest, sizeof(dest))) {
-    setErr("Path too long");
-    return false;
-  }
-
-  if (strcmp(gClip.path, dest) == 0) {
-    setErr("Same location");
-    return false;
-  }
-
-  const bool srcDir = fileOpsIsDir(gClip.path);
-  if (srcDir && gClip.isCut && pathIsUnder(destDir, gClip.path)) {
-    setErr("Can't move into itself");
-    return false;
-  }
-
-  if (SD.exists(dest)) {
-    setErr("Name exists");
-    return false;
-  }
-
-  if (gClip.isCut) {
-    if (!fileOpsRename(gClip.path, dest)) {
-      setErr("Move failed");
+  // Validate the whole batch first so ordinary errors cannot leave a partially
+  // moved selection.
+  for (const auto& source : gClip.paths) {
+    if (!fileOpsExists(source.c_str())) {
+      setErr("Source missing");
       return false;
     }
-    fileClipboardClear();
-    return true;
+    char base[96];
+    if (!fileOpsBasename(source.c_str(), base, sizeof(base))) {
+      setErr("Bad name");
+      return false;
+    }
+    char dest[kFilePathMax];
+    if (!fileOpsJoin(destDir, base, dest, sizeof(dest))) {
+      setErr("Path too long");
+      return false;
+    }
+    if (source == dest) {
+      setErr("Same location");
+      return false;
+    }
+    const bool srcDir = fileOpsIsDir(source.c_str());
+    if (srcDir && !gClip.isCut) {
+      setErr("Copy folder unsupported");
+      return false;
+    }
+    if (srcDir && pathIsUnder(destDir, source.c_str())) {
+      setErr("Can't move into itself");
+      return false;
+    }
+    if (SD.exists(dest)) {
+      setErr("Name exists");
+      return false;
+    }
+    for (const auto& item : pending) {
+      if (item.dest == dest) {
+        setErr("Duplicate name");
+        return false;
+      }
+    }
+    pending.push_back({source, dest});
   }
 
-  if (srcDir) {
-    setErr("Copy folder unsupported");
-    return false;
+  for (size_t i = 0; i < pending.size(); ++i) {
+    const auto& item = pending[i];
+    const bool ok = gClip.isCut ? fileOpsRename(item.source.c_str(), item.dest.c_str())
+                                : fileOpsCopyFile(item.source.c_str(), item.dest.c_str());
+    if (!ok) {
+      if (gClip.isCut) {
+        std::vector<std::string> remaining;
+        for (size_t j = i; j < pending.size(); ++j) remaining.push_back(pending[j].source);
+        fileClipboardSet(remaining, true);
+      }
+      if (i > 0) setErr(gClip.isCut ? "Some moved; remaining kept" : "Some copied; batch stopped");
+      else setErr(gClip.isCut ? "Move failed" : "Copy failed");
+      return false;
+    }
   }
-  if (!fileOpsCopyFile(gClip.path, dest)) {
-    setErr("Copy failed");
-    return false;
-  }
+  if (gClip.isCut) fileClipboardClear();
   return true;
 }
 

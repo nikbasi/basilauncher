@@ -304,6 +304,20 @@ bool boardPollTouch(int& x, int& y) {
   return true;
 }
 
+bool boardPollLongPress(int& x, int& y) {
+  if (!gTouchOk) return false;
+  float nx = 0, ny = 0;
+  if (gAsyncInput) {
+    if (!gInput.popTouchLongPress(nx, ny)) return false;
+  } else {
+    if (!gInput.wasTouchLongPress(nx, ny)) return false;
+    gInput.suppressTouchContact();
+  }
+  gWasDown = false;
+  canvasTouchToLogical(nx, ny, x, y);
+  return true;
+}
+
 bool boardPollSwipe(int& x0, int& y0, int& x1, int& y1) {
   if (!gTouchOk) return false;
   float nsx = 0, nsy = 0, nex = 0, ney = 0;

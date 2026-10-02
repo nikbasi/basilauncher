@@ -59,6 +59,8 @@ bool boardSdOk();
 void boardInputUpdate();
 // Tap in portrait logical coords (after boardInputUpdate).
 bool boardPollTouch(int& x, int& y);
+// Stationary long-press in portrait logical coords; release will not also tap.
+bool boardPollLongPress(int& x, int& y);
 // Swipe in portrait logical coords (check before tap).
 bool boardPollSwipe(int& x0, int& y0, int& x1, int& y1);
 bool boardTouchHeld(int& x, int& y);

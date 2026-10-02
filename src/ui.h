@@ -92,9 +92,12 @@ struct ExplorerDrawState {
   size_t maxBytes = 0;
   int scroll = 0;
   int selected = -1;
+  const std::vector<int>* selectedIndices = nullptr;
+  bool multiSelect = false;
   bool sheetOpen = false;  // action sheet overlay
   bool clipboardHas = false;
   bool clipboardCut = false;
+  size_t clipboardCount = 0;
   const char* currentPath = "/";
 };
 
@@ -120,7 +123,7 @@ void uiRedrawTextEditField(const char* text, TextEditMode mode);
 
 UiHit uiHitHome(int x, int y);
 UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool sheetOpen,
-                    bool clipboardHas);
+                    bool clipboardHas, int selectedCount);
 UiHit uiHitSettings(int x, int y);
 UiHit uiHitShade(int x, int y);
 UiHit uiHitConfirm(int x, int y);

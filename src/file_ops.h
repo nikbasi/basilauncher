@@ -2,12 +2,14 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 constexpr size_t kFilePathMax = 192;
 constexpr size_t kTextEditMax = 6144;  // leave headroom under DRAM pressure
 
 struct FileClipboard {
-  char path[kFilePathMax] = {};
+  std::vector<std::string> paths;
   bool isCut = false;
   bool hasItem = false;
 };
@@ -15,6 +17,7 @@ struct FileClipboard {
 FileClipboard& fileClipboard();
 void fileClipboardClear();
 void fileClipboardSet(const char* path, bool cut);
+void fileClipboardSet(const std::vector<std::string>& paths, bool cut);
 
 bool fileOpsJoin(const char* dir, const char* name, char* out, size_t outLen);
 bool fileOpsBasename(const char* path, char* out, size_t outLen);
