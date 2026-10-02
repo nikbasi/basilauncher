@@ -38,7 +38,7 @@ bool ditherRowToCanvas(const uint8_t* row, int copyW, int srcX0, int dstX0, int 
 
 }  // namespace
 
-bool bmpDrawFile(const char* path) {
+bool bmpDrawFile(const char* path, BmpAbortCheck abortCheck) {
   File f = SD.open(path, FILE_READ);
   if (!f) return false;
 
@@ -102,6 +102,13 @@ bool bmpDrawFile(const char* path) {
   int* cur = errA;
   int* nxt = errB;
   for (int sy = 0; sy < hAbs; ++sy) {
+    if (abortCheck && (sy & 15) == 0 && abortCheck()) {
+      free(row);
+      free(errA);
+      free(errB);
+      f.close();
+      return false;
+    }
     const int fileRow = bottomUp ? (hAbs - 1 - sy) : sy;
     if (!f.seek(dataOff + static_cast<uint32_t>(fileRow) * static_cast<uint32_t>(rowBytes))) {
       free(row);

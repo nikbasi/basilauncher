@@ -1071,7 +1071,8 @@ void setup() {
   Serial.println("Basilauncher " BASILAUNCHER_VERSION);
 
   // Decide the wake hold before the slow panel and SD startup.
-  const bool stayAwake = sleepBootHoldKeepsAwake(600);
+  const bool fromSleepWake = sleepWokeFromBootButton();
+  bool stayAwake = sleepBootHoldKeepsAwake(600);
 
   boardMarkFactoryValid();
   boardInit();
@@ -1086,12 +1087,22 @@ void setup() {
   boardInitFrontlight();
   appsLoadSlotLabels();
 
-  if (!stayAwake) {
-    enterSleepWithScreensaver(/*quiet=*/true);
+  // Short tap while asleep: user may start holding during panel/SD init.
+  if (!stayAwake && sleepTryAbortForBootHold(500)) {
+    stayAwake = true;
   }
 
-  uiDrawSplash();
-  delay(1200);
+  if (!stayAwake) {
+    if (!enterSleepWithScreensaver(/*quiet=*/true)) {
+      stayAwake = true;  // aborted for wake hold during wallpaper change
+    }
+  }
+
+  // Logo only on cold / power-on style boots — not when waking from sleep.
+  if (!fromSleepWake) {
+    uiDrawSplash();
+    delay(1200);
+  }
   // Clean home so the charging icons are sharp on the first frame.
   showHome(true);
   noteActivity();

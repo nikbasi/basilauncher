@@ -14,3 +14,9 @@ bool enterSleepWithScreensaver(bool quiet = false);
 // Returns false when the press was released early: finish display init, then
 // call enterSleepWithScreensaver(true) so a tap still cycles the sleep image.
 bool sleepBootHoldKeepsAwake(uint32_t needMs = 600);
+
+// True when this boot was caused by the BOOT/ext1 wake pin (deep-sleep wake).
+bool sleepWokeFromBootButton();
+
+// If BOOT is held for needMs, returns true (caller should stay awake).
+bool sleepTryAbortForBootHold(uint32_t needMs = 600);

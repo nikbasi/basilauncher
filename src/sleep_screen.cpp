@@ -44,21 +44,6 @@ int collectSleepFiles(char names[][kMaxNameLen], const char* dirPath) {
   return count;
 }
 
-bool pickAndDrawRandom() {
-  char names[kMaxSleepFiles][kMaxNameLen];
-  const char* dirs[] = {"/sleep", "/.sleep"};
-  for (const char* dir : dirs) {
-    const int n = collectSleepFiles(names, dir);
-    if (n <= 0) continue;
-    const int pick = static_cast<int>(esp_random() % static_cast<uint32_t>(n));
-    char path[96];
-    snprintf(path, sizeof(path), "%s/%s", dir, names[pick]);
-    Serial.printf("Sleep image: %s\n", path);
-    if (bmpDrawFile(path)) return true;
-  }
-  return false;
-}
-
 // Caption chip. `top` places it near the status area; otherwise bottom.
 void drawSleepBanner(const char* text, bool top, int scale) {
   if (!text || !text[0]) return;
@@ -114,17 +99,9 @@ bool bootPinPressed() {
   return digitalRead(pin) == (activeHigh ? HIGH : LOW);
 }
 
-bool wokeFromBootButton() {
-  const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-  if (cause == ESP_SLEEP_WAKEUP_EXT1) return true;
-#ifdef ESP_SLEEP_WAKEUP_GPIO
-  if (cause == ESP_SLEEP_WAKEUP_GPIO) return true;
-#endif
-  return false;
-}
-
 // If BOOT is already down, wait for a wake-length hold and abort sleep entry.
-// Gives a second press priority over finishing a sleep-image change.
+bool gSleepAbortWake = false;
+
 bool abortSleepForBootHold(uint32_t needMs = 600) {
   if (!bootPinPressed()) return false;
   if (needMs < 40) needMs = 40;
@@ -133,6 +110,7 @@ bool abortSleepForBootHold(uint32_t needMs = 600) {
     if (millis() - start >= needMs) {
       Serial.println("Wake: BOOT hold during sleep entry — staying awake");
       waitBootReleased();
+      gSleepAbortWake = true;
       return true;
     }
     delay(10);
@@ -140,7 +118,54 @@ bool abortSleepForBootHold(uint32_t needMs = 600) {
   return false;
 }
 
+// For bmpDrawFile: if BOOT is down, block briefly to see if it becomes a wake hold.
+bool abortCheckBootHold() {
+  return abortSleepForBootHold(600);
+}
+
+// Returns true if an image was drawn. Sets gSleepAbortWake if wake-hold aborted.
+bool pickAndDrawRandom() {
+  gSleepAbortWake = false;
+  char names[kMaxSleepFiles][kMaxNameLen];
+  const char* dirs[] = {"/sleep", "/.sleep"};
+  for (const char* dir : dirs) {
+    const int n = collectSleepFiles(names, dir);
+    if (n <= 0) continue;
+    const int pick = static_cast<int>(esp_random() % static_cast<uint32_t>(n));
+    char path[96];
+    snprintf(path, sizeof(path), "%s/%s", dir, names[pick]);
+    Serial.printf("Sleep image: %s\n", path);
+    if (bmpDrawFile(path, abortCheckBootHold)) return true;
+    if (gSleepAbortWake) return false;
+  }
+  return false;
+}
+
+// After a short wake tap, wait for a follow-up hold before committing to a
+// slow wallpaper redraw (user often taps by mistake then holds to wake).
+bool graceWaitForWakeHold(uint32_t windowMs, uint32_t needMs) {
+  const uint32_t end = millis() + windowMs;
+  while (static_cast<int32_t>(end - millis()) > 0) {
+    if (bootPinPressed() && abortSleepForBootHold(needMs)) return true;
+    delay(10);
+  }
+  return false;
+}
+
 }  // namespace
+
+bool sleepWokeFromBootButton() {
+  const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+  if (cause == ESP_SLEEP_WAKEUP_EXT1) return true;
+#ifdef ESP_SLEEP_WAKEUP_GPIO
+  if (cause == ESP_SLEEP_WAKEUP_GPIO) return true;
+#endif
+  return false;
+}
+
+bool sleepTryAbortForBootHold(uint32_t needMs) {
+  return abortSleepForBootHold(needMs);
+}
 
 bool enterSleepWithScreensaver(bool quiet) {
   if (!quiet) {
@@ -151,12 +176,15 @@ bool enterSleepWithScreensaver(bool quiet) {
     canvasPresentFor(CanvasRefreshIntent::Navigation);
     delay(300);
     if (abortSleepForBootHold()) return false;
+  } else {
+    // Short BOOT wake: give time to hold again before the slow image swap.
+    if (graceWaitForWakeHold(1200, 500)) return false;
   }
 
-  // Prefer wake over starting a slow image swap after a short BOOT tap.
   if (abortSleepForBootHold()) return false;
 
   if (!pickAndDrawRandom()) {
+    if (gSleepAbortWake || abortSleepForBootHold(80)) return false;
     canvasClear();
   }
   if (abortSleepForBootHold()) return false;
@@ -179,7 +207,7 @@ bool enterSleepWithScreensaver(bool quiet) {
 }
 
 bool sleepBootHoldKeepsAwake(uint32_t needMs) {
-  if (!wokeFromBootButton()) return true;
+  if (!sleepWokeFromBootButton()) return true;
 
   // millis() starts at the wake reset, while the button is already down, so
   // this wait is the whole hold. It must run before display and SD init or
