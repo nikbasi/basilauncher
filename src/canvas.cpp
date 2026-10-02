@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <esp_heap_caps.h>
 
 namespace {
 
@@ -27,25 +28,113 @@ inline void setPhysPixel(uint8_t* fb, uint16_t wb, int px, int py, bool black) {
   }
 }
 
+inline void setPlanePixel(uint8_t* plane, uint16_t wb, int px, int py, bool set) {
+  if (!plane || px < 0 || py < 0 || px >= kPhysW || py >= kPhysH) return;
+  const uint32_t idx = static_cast<uint32_t>(py) * wb + static_cast<uint32_t>(px / 8);
+  const uint8_t mask = static_cast<uint8_t>(0x80 >> (px & 7));
+  if (set) plane[idx] = static_cast<uint8_t>(plane[idx] | mask);
+  else plane[idx] = static_cast<uint8_t>(plane[idx] & ~mask);
+}
+
 }  // namespace
 
 EInkDisplay display(-1, -1, -1, -1, -1, -1);
 
-void canvasBegin() {
-  display.begin();
-  canvasClear();
-}
-
-void canvasClear() { display.clearScreen(0xFF); }
-
 namespace {
-int gUntilCleanRefresh = 1;  // first paint scrub
 int gCleanEvery = 8;
 bool gHoldCleanRefresh = false;
 int gUiTextSize = 1;  // 0=Small 10×20, 1=Medium 12×24, 2=Large 14×28
+uint8_t* gGrayLsb = nullptr;
+uint8_t* gGrayMsb = nullptr;
+bool gGrayUsed = false;
+uint32_t gGhostDebt = 0;
+bool gCleanPending = false;
+bool gForceClean = true;
+uint32_t gCleanDueMs = 0;
+
+constexpr uint32_t kFullArea = static_cast<uint32_t>(kScreenW) * kScreenH;
+
+const char* intentName(CanvasRefreshIntent intent) {
+  switch (intent) {
+    case CanvasRefreshIntent::InteractiveLocal: return "local";
+    case CanvasRefreshIntent::InteractiveViewport: return "viewport";
+    case CanvasRefreshIntent::Navigation: return "navigation";
+    case CanvasRefreshIntent::Progress: return "progress";
+    case CanvasRefreshIntent::StaticQuality: return "quality";
+    case CanvasRefreshIntent::Sleep: return "sleep";
+  }
+  return "unknown";
+}
+
+CanvasRect clippedRect(CanvasRect r) {
+  if (r.x < 0) {
+    r.w += r.x;
+    r.x = 0;
+  }
+  if (r.y < 0) {
+    r.h += r.y;
+    r.y = 0;
+  }
+  if (r.x >= kScreenW || r.y >= kScreenH || r.w <= 0 || r.h <= 0) return {0, 0, 0, 0};
+  if (r.w > kScreenW - r.x) r.w = kScreenW - r.x;
+  if (r.h > kScreenH - r.y) r.h = kScreenH - r.y;
+  return r;
+}
+
+CanvasRect toPhysicalRect(CanvasRect logical) {
+  logical = clippedRect(logical);
+  if (logical.w <= 0 || logical.h <= 0) return {0, 0, 0, 0};
+  return {logical.y, kPhysH - logical.x - logical.w, logical.h, logical.w};
+}
+
+void clearGrayPlanes() {
+  const size_t bytes = display.getBufferSize();
+  if (gGrayLsb) memset(gGrayLsb, 0, bytes);
+  if (gGrayMsb) memset(gGrayMsb, 0, bytes);
+  gGrayUsed = false;
+}
+
+void presentCleanFrame(const char* reason) {
+  const uint32_t started = millis();
+  const bool gray = gGrayUsed && gGrayLsb && gGrayMsb && display.supportsGrayFrame();
+  if (gray) {
+    display.copyGrayscaleBuffers(gGrayLsb, gGrayMsb);
+    display.displayGrayscaleFrame(EInkDisplay::HALF_REFRESH, false);
+  } else {
+    display.displayBuffer(EInkDisplay::HALF_REFRESH, false);
+  }
+  Serial.printf("[epd] intent=%s mode=clean gray=%d refresh=%lu ms debt=%lu\n", reason, gray ? 1 : 0,
+                static_cast<unsigned long>(millis() - started), static_cast<unsigned long>(gGhostDebt));
+  gGhostDebt = 0;
+  gCleanPending = false;
+  gForceClean = false;
+}
 }  // namespace
 
-void canvasRequestCleanRefresh() { gUntilCleanRefresh = 1; }
+void canvasBegin() {
+  display.begin();
+  const size_t bytes = display.getBufferSize();
+  gGrayLsb = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  gGrayMsb = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!gGrayLsb || !gGrayMsb) {
+    if (gGrayLsb) heap_caps_free(gGrayLsb);
+    if (gGrayMsb) heap_caps_free(gGrayMsb);
+    gGrayLsb = gGrayMsb = nullptr;
+    Serial.println("[epd] grayscale masks unavailable; using black/white");
+  }
+  canvasClear();
+}
+
+void canvasClear() {
+  display.clearScreen(0xFF);
+  clearGrayPlanes();
+}
+
+void canvasRequestCleanRefresh() {
+  gForceClean = true;
+  gCleanPending = true;
+  gCleanDueMs = millis();
+}
 
 void canvasSetCleanEvery(int n) {
   if (n < 1) n = 1;
@@ -107,30 +196,109 @@ int canvasTitleCellH() {
   }
 }
 
-void canvasPresent(EInkDisplay::RefreshMode mode) { display.displayBuffer(mode, false); }
-
-void canvasPresentAuto() {
-  // FAST/HALF cadence: FAST for ordinary UI, HALF every few frames to
-  // scrub. Consecutive HALF/FULL on this panel skip unchanged white and leave
-  // faint imprints of the previous screen.
-  //
-  // Hold skips the scrub counter entirely — used by the on-screen keyboard so
-  // typing never pays for a mid-burst HALF (ghosting is scrubbed on exit).
-  EInkDisplay::RefreshMode mode = EInkDisplay::FAST_REFRESH;
-  if (!gHoldCleanRefresh && gUntilCleanRefresh <= 1) {
-    mode = EInkDisplay::HALF_REFRESH;
-    gUntilCleanRefresh = gCleanEvery;
-  } else if (!gHoldCleanRefresh) {
-    --gUntilCleanRefresh;
+void canvasPresent(EInkDisplay::RefreshMode mode) {
+  const uint32_t started = millis();
+  const bool clean = mode != EInkDisplay::FAST_REFRESH;
+  const bool gray = clean && gGrayUsed && gGrayLsb && gGrayMsb && display.supportsGrayFrame();
+  if (gray) {
+    display.copyGrayscaleBuffers(gGrayLsb, gGrayMsb);
+    display.displayGrayscaleFrame(mode, false);
+  } else {
+    display.displayBuffer(mode, false);
   }
-  canvasPresent(mode);
+  Serial.printf("[epd] intent=direct mode=%s gray=%d refresh=%lu ms\n", clean ? "clean" : "fast",
+                gray ? 1 : 0, static_cast<unsigned long>(millis() - started));
+  if (clean) {
+    gGhostDebt = 0;
+    gCleanPending = false;
+    gForceClean = false;
+  }
 }
 
-void canvasSetHoldCleanRefresh(bool hold) { gHoldCleanRefresh = hold; }
+void canvasPresentAuto() {
+  if (gForceClean && !gHoldCleanRefresh) {
+    presentCleanFrame("requested");
+    return;
+  }
+  canvasPresentFor(CanvasRefreshIntent::Navigation);
+}
+
+void canvasPresentFor(CanvasRefreshIntent intent, CanvasRect dirty) {
+  dirty = clippedRect(dirty);
+  if (dirty.w <= 0 || dirty.h <= 0) return;
+
+  if (intent == CanvasRefreshIntent::StaticQuality || intent == CanvasRefreshIntent::Sleep) {
+    presentCleanFrame(intentName(intent));
+    return;
+  }
+
+  const CanvasRect native = toPhysicalRect(dirty);
+  const bool full = dirty.x == 0 && dirty.y == 0 && dirty.w == kScreenW && dirty.h == kScreenH;
+  const uint32_t started = millis();
+  if (full) {
+    display.displayBuffer(EInkDisplay::FAST_REFRESH, false);
+  } else {
+    display.displayWindow(native.x, native.y, native.w, native.h, false);
+  }
+  const uint32_t elapsed = millis() - started;
+  const uint32_t area = static_cast<uint32_t>(dirty.w) * dirty.h;
+  gGhostDebt = std::min<uint32_t>(UINT32_MAX - area, gGhostDebt) + area;
+
+  uint32_t settleMs = 700;
+  switch (intent) {
+    case CanvasRefreshIntent::InteractiveLocal: settleMs = 1800; break;
+    case CanvasRefreshIntent::InteractiveViewport: settleMs = 800; break;
+    case CanvasRefreshIntent::Navigation: settleMs = 650; break;
+    case CanvasRefreshIntent::Progress: settleMs = 2000; break;
+    default: break;
+  }
+  if (gForceClean || gGhostDebt >= kFullArea * static_cast<uint32_t>(gCleanEvery)) {
+    settleMs = std::min<uint32_t>(settleMs, 200);
+  }
+  // Clean only when explicitly requested, once the area-weighted fast budget
+  // is spent, or when a stable screen has real-gray refinement waiting. This
+  // keeps "Clean every N" meaningful and avoids paying a 2.6 s clean waveform
+  // after every tiny update.
+  const bool budgetSpent = gGhostDebt >= kFullArea * static_cast<uint32_t>(gCleanEvery);
+  const bool grayRefinement = gGrayUsed && intent == CanvasRefreshIntent::Navigation;
+  const bool pendingRefinement = gCleanPending && gGrayUsed;
+  const bool scheduleClean = gForceClean || budgetSpent || grayRefinement || pendingRefinement;
+  gCleanPending = scheduleClean;
+  if (scheduleClean) {
+    if ((grayRefinement || pendingRefinement) && !gForceClean && !budgetSpent) {
+      settleMs = std::max<uint32_t>(settleMs, 1800);
+    }
+    gCleanDueMs = millis() + settleMs;
+  }
+  Serial.printf(
+      "[epd] intent=%s mode=fast logical=%d,%d %dx%d native=%d,%d %dx%d refresh=%lu ms debt=%lu clean=%d due=%lu\n",
+      intentName(intent), dirty.x, dirty.y, dirty.w, dirty.h, native.x, native.y, native.w, native.h,
+      static_cast<unsigned long>(elapsed), static_cast<unsigned long>(gGhostDebt), scheduleClean ? 1 : 0,
+      static_cast<unsigned long>(scheduleClean ? settleMs : 0));
+}
+
+void canvasServiceRefresh() {
+  if (!gCleanPending || gHoldCleanRefresh) return;
+  if (static_cast<int32_t>(millis() - gCleanDueMs) < 0) return;
+  presentCleanFrame("settle");
+}
+
+void canvasCancelPendingClean() {
+  gCleanPending = false;
+  gForceClean = false;
+}
+
+void canvasSetHoldCleanRefresh(bool hold) {
+  gHoldCleanRefresh = hold;
+  if (!hold && gCleanPending && static_cast<int32_t>(millis() - gCleanDueMs) >= 0) {
+    gCleanDueMs = millis();
+  }
+}
 
 void canvasNuclearFlash() {
   gHoldCleanRefresh = false;
   // Drive every pixel off white through the fast bank, then scrub toward white.
+  clearGrayPlanes();
   display.clearScreen(0x00);
   canvasPresent(EInkDisplay::FAST_REFRESH);
   display.clearScreen(0xFF);
@@ -142,7 +310,10 @@ void canvasSetPixel(int x, int y, bool black) {
   if (!fb) return;
   int px = 0, py = 0;
   toPhysical(x, y, px, py);
-  setPhysPixel(fb, display.getDisplayWidthBytes(), px, py, black);
+  const uint16_t wb = display.getDisplayWidthBytes();
+  setPhysPixel(fb, wb, px, py, black);
+  setPlanePixel(gGrayLsb, wb, px, py, false);
+  setPlanePixel(gGrayMsb, wb, px, py, false);
 }
 
 void canvasFillRect(int x, int y, int w, int h, bool black) {
@@ -155,6 +326,25 @@ void canvasFillRect(int x, int y, int w, int h, bool black) {
       int px = 0, py = 0;
       toPhysical(lx, ly, px, py);
       setPhysPixel(fb, wb, px, py, black);
+      setPlanePixel(gGrayLsb, wb, px, py, false);
+      setPlanePixel(gGrayMsb, wb, px, py, false);
+    }
+  }
+}
+
+void canvasFillGrayRect(int x, int y, int w, int h, bool light) {
+  if (w <= 0 || h <= 0 || !gGrayLsb || !gGrayMsb) return;
+  uint8_t* fb = display.getFrameBuffer();
+  if (!fb) return;
+  const uint16_t wb = display.getDisplayWidthBytes();
+  gGrayUsed = true;
+  for (int ly = y; ly < y + h; ++ly) {
+    for (int lx = x; lx < x + w; ++lx) {
+      int px = 0, py = 0;
+      toPhysical(lx, ly, px, py);
+      setPhysPixel(fb, wb, px, py, false);
+      setPlanePixel(gGrayLsb, wb, px, py, !light);
+      setPlanePixel(gGrayMsb, wb, px, py, light);
     }
   }
 }
@@ -213,6 +403,27 @@ void canvasFillRoundRect(int x, int y, int w, int h, int r, bool black) {
         canvasSetPixel(x + w - r + dx, y + r - 1 - dy, black);
         canvasSetPixel(x + r - 1 - dx, y + h - r + dy, black);
         canvasSetPixel(x + w - r + dx, y + h - r + dy, black);
+      }
+    }
+  }
+}
+
+void canvasFillGrayRoundRect(int x, int y, int w, int h, int r, bool light) {
+  if (w <= 0 || h <= 0) return;
+  if (r <= 0 || r * 2 >= w || r * 2 >= h) {
+    canvasFillGrayRect(x, y, w, h, light);
+    return;
+  }
+  canvasFillGrayRect(x + r, y, w - 2 * r, h, light);
+  canvasFillGrayRect(x, y + r, r, h - 2 * r, light);
+  canvasFillGrayRect(x + w - r, y + r, r, h - 2 * r, light);
+  for (int dy = 0; dy < r; ++dy) {
+    for (int dx = 0; dx < r; ++dx) {
+      if (dx * dx + dy * dy <= r * r) {
+        canvasFillGrayRect(x + r - 1 - dx, y + r - 1 - dy, 1, 1, light);
+        canvasFillGrayRect(x + w - r + dx, y + r - 1 - dy, 1, 1, light);
+        canvasFillGrayRect(x + r - 1 - dx, y + h - r + dy, 1, 1, light);
+        canvasFillGrayRect(x + w - r + dx, y + h - r + dy, 1, 1, light);
       }
     }
   }

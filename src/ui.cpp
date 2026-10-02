@@ -218,17 +218,9 @@ SettingsGeom settingsGeom() {
 }
 
 void fillLightGrayRoundRect(int x, int y, int w, int h, int r) {
+  // The ED047TC2 gray overlay can collapse large masks to black on this panel.
+  // Keep changing surfaces sparse B/W; their outline is drawn by the caller.
   canvasFillRoundRect(x, y, w, h, r, false);
-  const int x1 = x + w;
-  const int y1 = y + h;
-  for (int yy = y; yy < y1; ++yy) {
-    for (int xx = x; xx < x1; ++xx) {
-      const int dx = (xx < x + r) ? (x + r - xx) : ((xx >= x1 - r) ? (xx - (x1 - r - 1)) : 0);
-      const int dy = (yy < y + r) ? (y + r - yy) : ((yy >= y1 - r) ? (yy - (y1 - r - 1)) : 0);
-      if (dx * dx + dy * dy > r * r) continue;
-      if (((xx + 2 * yy) & 3) == 0) canvasSetPixel(xx, yy, true);
-    }
-  }
 }
 
 void drawSectionRule(int y, int panelX, int panelW) {
@@ -405,11 +397,8 @@ void drawSlotCard(int index, const SlotInfo& slot) {
   }
 }
 
-void present() { canvasPresentAuto(); }
-void presentClean() {
-  canvasRequestCleanRefresh();
-  canvasPresentAuto();
-}
+void presentNavigation() { canvasPresentFor(CanvasRefreshIntent::Navigation); }
+void presentQuality() { canvasPresentFor(CanvasRefreshIntent::StaticQuality); }
 
 void drawWrappedBody(const char* body, int startY) {
   if (!body) return;
@@ -500,7 +489,14 @@ void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space) {
   snprintf(freeLine, sizeof(freeLine), "free %s", freeBuf);
   const int freeY = fy + (fh - canvasTextHeight(kSmall)) / 2;
   canvasDrawString(kScreenW - kPad - canvasTextWidth(freeLine, kSmall), freeY, freeLine, true, kSmall);
-  presentClean();
+  presentNavigation();
+}
+
+void uiRedrawHomeStatus(const FlashSpace& space) {
+  const int h = statusBarH();
+  canvasFillRect(0, 0, kScreenW, h, false);
+  drawStatusBar(space, true);
+  canvasPresentFor(CanvasRefreshIntent::InteractiveLocal, {0, 0, kScreenW, h});
 }
 
 constexpr int kExplorerRowH = 72;
@@ -733,6 +729,61 @@ void explorerSheetCell(int index, int& x, int& y, int& w, int& h) {
   y = gridTop + row * (h + kSheetGap);
 }
 
+void drawExplorerViewport(const std::vector<DirEntry>& entries, const ExplorerDrawState& st) {
+  const int listTop = explorerListTop();
+  const int listBottom = explorerListBottom();
+  const int visible = uiExplorerVisibleRows();
+  const int cardW = kScreenW - 2 * kPad;
+  const int start = st.scroll;
+  const int end = std::min(static_cast<int>(entries.size()), start + visible);
+  constexpr int kIconCol = 44;
+
+  canvasFillRect(0, listTop, kScreenW, listBottom - listTop, false);
+  if (entries.empty()) {
+    canvasDrawString(kPad, listTop + 24, boardSdOk() ? "Empty folder" : "Insert SD card", true, kBody);
+  } else {
+    for (int i = start; i < end; ++i) {
+      const DirEntry& e = entries[i];
+      const int rowY = listTop + (i - start) * kExplorerRowH;
+      const bool sel = (i == st.selected);
+      if (sel) canvasFillRoundRect(kPad, rowY, cardW, kExplorerRowH - 8, 12, true);
+      else canvasDrawRoundRect(kPad, rowY, cardW, kExplorerRowH - 8, 12, true);
+
+      const bool ink = !sel;
+      drawEntryIcon(entryIconKind(e), kPad + 26, rowY + (kExplorerRowH - 8) / 2, ink);
+
+      const int textX = kPad + kIconCol + 8;
+      const int nameMaxW = cardW - kIconCol - 24 - (e.isDir ? 0 : 72);
+      const int charsPerLine = std::max(6, nameMaxW / canvasBodyCellW());
+      char nameBuf[96];
+      snprintf(nameBuf, sizeof(nameBuf), "%s", e.name.c_str());
+      truncate(nameBuf, static_cast<size_t>(charsPerLine));
+      canvasDrawString(textX, rowY + 14, nameBuf, ink, kBody);
+
+      if (!e.isDir) {
+        char sz[24];
+        appsFormatBytes(e.size, sz, sizeof(sz));
+        const bool over =
+            st.mode == ExplorerMode::Install && fileOpsIsBin(e.name.c_str()) && e.size > st.maxBytes;
+        char right[28];
+        if (over) snprintf(right, sizeof(right), "!%s", sz);
+        else snprintf(right, sizeof(right), "%s", sz);
+        canvasDrawString(kPad + cardW - 14 - canvasTextWidth(right, kSmall), rowY + 18, right, ink, kSmall);
+      } else {
+        canvasDrawString(kPad + cardW - 28, rowY + 18, ">", ink, kTitle);
+      }
+    }
+  }
+
+  if (entries.size() > static_cast<size_t>(visible)) {
+    const int trackH = listBottom - listTop - 20;
+    const int thumbH = std::max(16, trackH * visible / static_cast<int>(entries.size()));
+    const int maxScroll = std::max(1, static_cast<int>(entries.size()) - visible);
+    const int thumbY = listTop + 10 + (trackH - thumbH) * st.scroll / maxScroll;
+    canvasFillRoundRect(kScreenW - 10, thumbY, 4, thumbH, 2, true);
+  }
+}
+
 void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawState& st,
                     const FlashSpace& space) {
   canvasClear();
@@ -790,58 +841,7 @@ void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawStat
                      clip, true, kSmall);
   }
 
-  const int listTop = explorerListTop();
-  const int listBottom = explorerListBottom();
-  const int visible = uiExplorerVisibleRows();
-  const int cardW = kScreenW - 2 * kPad;
-  const int start = st.scroll;
-  const int end = std::min(static_cast<int>(entries.size()), start + visible);
-  constexpr int kIconCol = 44;
-
-  if (entries.empty()) {
-    canvasDrawString(kPad, listTop + 24, boardSdOk() ? "Empty folder" : "Insert SD card", true, kBody);
-  } else {
-    for (int i = start; i < end; ++i) {
-      const DirEntry& e = entries[i];
-      const int rowY = listTop + (i - start) * kExplorerRowH;
-      const bool sel = (i == st.selected);
-      if (sel) canvasFillRoundRect(kPad, rowY, cardW, kExplorerRowH - 8, 12, true);
-      else canvasDrawRoundRect(kPad, rowY, cardW, kExplorerRowH - 8, 12, true);
-
-      const bool ink = !sel;
-      drawEntryIcon(entryIconKind(e), kPad + 26, rowY + (kExplorerRowH - 8) / 2, ink);
-
-      const int textX = kPad + kIconCol + 8;
-      const int nameMaxW = cardW - kIconCol - 24 - (e.isDir ? 0 : 72);
-      const int charsPerLine = std::max(6, nameMaxW / canvasBodyCellW());
-      char nameBuf[96];
-      snprintf(nameBuf, sizeof(nameBuf), "%s", e.name.c_str());
-      truncate(nameBuf, static_cast<size_t>(charsPerLine));
-      canvasDrawString(textX, rowY + 14, nameBuf, ink, kBody);
-
-      if (!e.isDir) {
-        char sz[24];
-        appsFormatBytes(e.size, sz, sizeof(sz));
-        const bool over =
-            st.mode == ExplorerMode::Install && fileOpsIsBin(e.name.c_str()) && e.size > st.maxBytes;
-        char right[28];
-        if (over) snprintf(right, sizeof(right), "!%s", sz);
-        else snprintf(right, sizeof(right), "%s", sz);
-        canvasDrawString(kPad + cardW - 14 - canvasTextWidth(right, kSmall), rowY + 18, right, ink,
-                         kSmall);
-      } else {
-        canvasDrawString(kPad + cardW - 28, rowY + 18, ">", ink, kTitle);
-      }
-    }
-  }
-
-  if (entries.size() > static_cast<size_t>(visible)) {
-    const int trackH = listBottom - listTop - 20;
-    const int thumbH = std::max(16, trackH * visible / static_cast<int>(entries.size()));
-    const int maxScroll = std::max(1, static_cast<int>(entries.size()) - visible);
-    const int thumbY = listTop + 10 + (trackH - thumbH) * st.scroll / maxScroll;
-    canvasFillRoundRect(kScreenW - 10, thumbY, 4, thumbH, 2, true);
-  }
+  drawExplorerViewport(entries, st);
 
   // Bottom: Paste (when ready) + actions menu only.
   const int dockY = kScreenH - kExplorerDockH;
@@ -887,7 +887,30 @@ void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawStat
     }
   }
 
-  presentClean();
+  presentNavigation();
+}
+
+void uiRedrawExplorerViewport(const std::vector<DirEntry>& entries, const ExplorerDrawState& st) {
+  drawExplorerViewport(entries, st);
+
+  const int dockY = kScreenH - kExplorerDockH;
+  canvasFillRect(0, dockY, kScreenW, kExplorerDockH, false);
+  canvasDrawLine(0, dockY, kScreenW - 1, dockY, true);
+  const int btnH = 48;
+  const int btnY = dockY + (kExplorerDockH - btnH) / 2;
+  int bx = kPad;
+  if (st.clipboardHas) {
+    drawIconBtn(bx, btnY, 64, btnH, drawIconPaste, true);
+    bx += 74;
+  }
+  if (st.selected >= 0) {
+    const char* tip = "tap again to open";
+    canvasDrawString(bx + 4, btnY + (btnH - canvasTextHeight(kSmall)) / 2, tip, true, kSmall);
+  }
+  drawIconBtn(kScreenW - kPad - 64, btnY, 64, btnH, drawIconMenu, false);
+
+  const int top = explorerListTop();
+  canvasPresentFor(CanvasRefreshIntent::InteractiveViewport, {0, top, kScreenW, kScreenH - top});
 }
 
 UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool sheetOpen,
@@ -974,10 +997,7 @@ UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool
   return hit;
 }
 
-void uiDrawShade(const FlashSpace& space) {
-  canvasClear();
-  drawStatusBar(space, false);
-
+void drawShadeControls() {
   const ShadeGeom g = shadeGeom();
   gShadePanelBottom = g.panelY + g.panelH;
 
@@ -1023,7 +1043,21 @@ void uiDrawShade(const FlashSpace& space) {
 
   // Open menu: down cue only (same pill size as the closed status-bar cue).
   drawShadeGrabCue(g.grabY + 2, /*menuOpen=*/true);
-  presentClean();
+}
+
+void uiDrawShade(const FlashSpace& space) {
+  canvasClear();
+  drawStatusBar(space, false);
+  drawShadeControls();
+  presentNavigation();
+}
+
+void uiRedrawShadeControls(const FlashSpace& space) {
+  const ShadeGeom g = shadeGeom();
+  canvasFillRect(0, 0, kScreenW, g.panelY + g.panelH, false);
+  drawStatusBar(space, false);
+  drawShadeControls();
+  canvasPresentFor(CanvasRefreshIntent::InteractiveLocal, {0, 0, kScreenW, g.panelY + g.panelH});
 }
 
 UiHit uiHitShade(int x, int y) {
@@ -1111,7 +1145,7 @@ void uiDrawSettings(const FlashSpace& space) {
 
   char every[12];
   snprintf(every, sizeof(every), "%d", boardCleanEvery());
-  drawSettingsStepper(g.cleanY, "Clean every", every, g.cleanMinusX, g.cleanPlusX);
+  drawSettingsStepper(g.cleanY, "Fast budget", every, g.cleanMinusX, g.cleanPlusX);
 
   const BoardClockInfo clock = boardClock();
   canvasDrawString(kPad, g.timeLabelY, "Time", true, kBody);
@@ -1143,7 +1177,7 @@ void uiDrawSettings(const FlashSpace& space) {
   drawOutlineBtn(kPad, g.powerY, kScreenW - 2 * kPad, kActionBtnH, "Sleep / power off");
   drawFilledBtn(kPad, g.backY, kScreenW - 2 * kPad, kActionBtnH, "Back");
   canvasDrawString(kPad, g.tipY, "Hold BOOT to sleep or wake.", true, kSmall);
-  presentClean();
+  presentNavigation();
 }
 
 UiHit uiHitSettings(int x, int y) {
@@ -1193,20 +1227,31 @@ UiHit uiHitSettings(int x, int y) {
 void uiDrawProgress(const char* title, int percent) {
   if (percent < 0) percent = 0;
   if (percent > 100) percent = 100;
-  canvasClear();
-  drawStatusBar(appsFlashSpace(), false);
-  canvasDrawString(kPad, statusBarH() + 80, title ? title : "Working...", true, kTitle);
+  const char* shownTitle = title ? title : "Working...";
+  static char lastTitle[64] = {};
+  static int lastPercent = 101;
+  const bool newProgress = strcmp(lastTitle, shownTitle) != 0 || percent <= lastPercent;
+  if (newProgress) {
+    canvasClear();
+    drawStatusBar(appsFlashSpace(), false);
+    canvasDrawString(kPad, statusBarH() + 80, shownTitle, true, kTitle);
+  }
   const int barX = kPad;
   const int barY = statusBarH() + 140;
   const int barW = kScreenW - 2 * kPad;
   const int barH = 32;
+  const int dirtyH = 48 + canvasTextHeight(2);
+  if (!newProgress) canvasFillRect(barX - 2, barY - 2, barW + 4, dirtyH + 4, false);
   canvasDrawRoundRect(barX, barY, barW, barH, 10, true);
   const int fill = (barW - 6) * percent / 100;
   if (fill > 0) canvasFillRoundRect(barX + 3, barY + 3, fill, barH - 6, 6, true);
   char pct[16];
   snprintf(pct, sizeof(pct), "%d%%", percent);
   canvasDrawString(kPad, barY + 48, pct, true, 2);
-  present();
+  snprintf(lastTitle, sizeof(lastTitle), "%s", shownTitle);
+  lastPercent = percent;
+  canvasPresentFor(CanvasRefreshIntent::Progress,
+                   newProgress ? CanvasRect{} : CanvasRect{barX - 2, barY - 2, barW + 4, dirtyH + 4});
 }
 
 void uiDrawMessage(const char* title, const char* body) {
@@ -1215,7 +1260,7 @@ void uiDrawMessage(const char* title, const char* body) {
   canvasDrawString(kPad, statusBarH() + 28, title ? title : "Notice", true, kTitle);
   drawWrappedBody(body, statusBarH() + 70);
   drawFilledBtn(kPad, kScreenH - kDockH - 70, kScreenW - 2 * kPad, kActionBtnH, "OK");
-  presentClean();
+  presentQuality();
 }
 
 void uiDrawConfirm(const char* title, const char* body) {
@@ -1228,7 +1273,7 @@ void uiDrawConfirm(const char* title, const char* body) {
   const int tileW = (kScreenW - 3 * kPad) / 2;
   drawOutlineBtn(kPad, y + 12, tileW, kDockH - 24, "Cancel");
   drawFilledBtn(kPad * 2 + tileW, y + 12, tileW, kDockH - 24, "Yes");
-  presentClean();
+  presentQuality();
 }
 
 UiHit uiHitConfirm(int x, int y) {
@@ -1258,7 +1303,7 @@ void uiDrawImageViewHint() {
   canvasFillRoundRect(boxX - 2, boxY - 2, boxW + 4, boxH + 4, 12, true);
   canvasFillRoundRect(boxX, boxY, boxW, boxH, 10, false);
   canvasDrawString(boxX + 14, boxY + 8, tip, true, kBody);
-  canvasPresent(EInkDisplay::HALF_REFRESH);
+  presentQuality();
 }
 
 namespace {
@@ -1819,13 +1864,16 @@ void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shif
   drawFilledBtn(kScreenW - kPad - 120, actionY, 120, kOskBarH, doneLabel);
 
   drawOsk(symbols, shift);
-  if (scrub) presentClean();
-  else present();
+  if (scrub) presentQuality();
+  else presentNavigation();
 }
 
 void uiRedrawTextEditField(const char* text, TextEditMode mode) {
   drawTextEditField(text, mode);
-  present();
+  const int actionY = oskActionBarY();
+  const int fieldTop = statusBarH() + kPad + 38;
+  canvasPresentFor(CanvasRefreshIntent::InteractiveLocal,
+                   {kPad, fieldTop, kScreenW - 2 * kPad, actionY - fieldTop});
 }
 
 UiHit uiHitTextEdit(int x, int y, bool symbols, bool shift) {

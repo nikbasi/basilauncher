@@ -100,9 +100,13 @@ struct ExplorerDrawState {
 
 void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawState& st,
                     const FlashSpace& space);
+// Incremental list/dock redraw for selection and scroll changes.
+void uiRedrawExplorerViewport(const std::vector<DirEntry>& entries, const ExplorerDrawState& st);
 
 void uiDrawSettings(const FlashSpace& space);
 void uiDrawShade(const FlashSpace& space);
+void uiRedrawShadeControls(const FlashSpace& space);
+void uiRedrawHomeStatus(const FlashSpace& space);
 void uiDrawProgress(const char* title, int percent);
 void uiDrawMessage(const char* title, const char* body);
 void uiDrawConfirm(const char* title, const char* body);

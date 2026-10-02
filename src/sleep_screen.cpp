@@ -129,15 +129,15 @@ void enterSleepWithScreensaver(bool quiet) {
   if (!quiet) {
     // Large top toast so the sleep transition is obvious.
     drawSleepBanner("Entering sleep...", /*top=*/true, /*scale=*/2);
-    canvasPresent(EInkDisplay::HALF_REFRESH);
-    delay(700);
+    canvasPresentFor(CanvasRefreshIntent::Navigation);
+    delay(300);
   }
 
   if (!pickAndDrawRandom()) {
     canvasClear();
   }
   drawSleepBanner("Hold BOOT to wake", /*top=*/false, /*scale=*/1);
-  canvasPresent(EInkDisplay::FULL_REFRESH);
+  canvasPresentFor(CanvasRefreshIntent::Sleep);
   delay(200);
 
   waitBootReleased();

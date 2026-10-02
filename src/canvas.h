@@ -12,16 +12,38 @@ constexpr int kScreenH = 960;
 
 extern EInkDisplay display;
 
+struct CanvasRect {
+  int x = 0;
+  int y = 0;
+  int w = kScreenW;
+  int h = kScreenH;
+};
+
+enum class CanvasRefreshIntent : uint8_t {
+  InteractiveLocal,
+  InteractiveViewport,
+  Navigation,
+  Progress,
+  StaticQuality,
+  Sleep,
+};
+
 void canvasBegin();
 void canvasClear();
 void canvasPresent(EInkDisplay::RefreshMode mode = EInkDisplay::HALF_REFRESH);
 // FAST by default; inserts a HALF scrub every few frames (and when requested).
 void canvasPresentAuto();
+// Activity-aware presentation. Interactive intents paint FAST immediately and
+// schedule one clean resting frame after the burst. Rectangles are logical
+// portrait coordinates and are converted to the panel's native orientation.
+void canvasPresentFor(CanvasRefreshIntent intent, CanvasRect dirty = {});
+void canvasServiceRefresh();
+void canvasCancelPendingClean();
 // While held, canvasPresentAuto never promotes to HALF — for text entry where
 // a mid-type scrub is worse than temporary ghosting (scrub on exit instead).
 void canvasSetHoldCleanRefresh(bool hold);
 void canvasRequestCleanRefresh();
-void canvasSetCleanEvery(int n);  // 1..30 frames between clean scrubs
+void canvasSetCleanEvery(int n);  // 1..30 full-screen-equivalents of FAST work
 int canvasCleanEvery();
 
 // Black → white flash so the next redraw/FULL can dig out ghosts that a plain
@@ -33,6 +55,10 @@ void canvasFillRect(int x, int y, int w, int h, bool black);
 void canvasDrawRect(int x, int y, int w, int h, bool black);
 void canvasDrawRoundRect(int x, int y, int w, int h, int r, bool black);
 void canvasFillRoundRect(int x, int y, int w, int h, int r, bool black);
+// True grayscale is reserved for stable/refined frames. Interactive FAST
+// frames leave these pixels white, avoiding a high-churn 1-bit dither pattern.
+void canvasFillGrayRect(int x, int y, int w, int h, bool light = true);
+void canvasFillGrayRoundRect(int x, int y, int w, int h, int r, bool light = true);
 void canvasDrawLine(int x0, int y0, int x1, int y1, bool black);
 
 // 8x16 ASC16 glyphs, scaled. scale=1 uses the UI text-size setting (body).

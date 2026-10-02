@@ -32,8 +32,6 @@ bool gSheetOpen = false;
 uint8_t gLastClockMinute = 255;
 uint32_t gLastActiveMs = 0;
 uint32_t gLastHomeScrubMs = 0;
-uint32_t gTextEditFastMs = 0;
-bool gTextEditIdleScrubPending = false;
 
 char gTextBuf[kTextEditMax];
 size_t gTextLen = 0;
@@ -51,11 +49,6 @@ bool gMessageReturnExplorer = false;
 
 void noteActivity() { gLastActiveMs = millis(); }
 
-void noteTextEditFastPaint() {
-  gTextEditFastMs = millis();
-  gTextEditIdleScrubPending = true;
-}
-
 struct ProgressCtx {
   const char* title;
   int lastPct;
@@ -64,17 +57,6 @@ struct ProgressCtx {
 void refreshSlots() {
   appsAllSlots(gSlots);
   gSpace = appsFlashSpace();
-}
-
-// After a burst of FAST key paints, one HALF of the current frame clears residue
-// without forcing the user to wait between keys.
-void maybeIdleScrubTextEdit() {
-  if (!gTextEditIdleScrubPending || gScreen != Screen::TextEdit) return;
-  if (millis() - gTextEditFastMs < 1800) return;
-  gTextEditIdleScrubPending = false;
-  canvasSetHoldCleanRefresh(false);
-  canvasPresent(EInkDisplay::HALF_REFRESH);
-  canvasSetHoldCleanRefresh(true);
 }
 
 // Soft maintenance scrub while the hub sits idle on Home.
@@ -86,8 +68,7 @@ void maybeIdleScrubHome() {
   if (now - gLastHomeScrubMs < kIdleMs) return;
   gLastHomeScrubMs = now;
   canvasRequestCleanRefresh();
-  refreshSlots();
-  uiDrawHome(gSlots, gSpace);
+  canvasServiceRefresh();
 }
 
 void showMessage(const char* title, const char* body, bool returnExplorer) {
@@ -126,7 +107,7 @@ void buildExplorerList() {
   if (gSelected >= static_cast<int>(gEntries.size())) gSelected = -1;
 }
 
-void redrawExplorer() {
+void redrawExplorer(bool viewportOnly = false) {
   canvasSetHoldCleanRefresh(false);
   ExplorerDrawState st;
   st.mode = gExplorerMode;
@@ -139,7 +120,8 @@ void redrawExplorer() {
   st.clipboardCut = fileClipboard().isCut;
   st.currentPath = gPath;
   gScreen = Screen::Explorer;
-  uiDrawExplorer(gEntries, st, gSpace);
+  if (viewportOnly && !st.sheetOpen) uiRedrawExplorerViewport(gEntries, st);
+  else uiDrawExplorer(gEntries, st, gSpace);
 }
 
 void showExplorer(ExplorerMode mode, int targetSlot) {
@@ -263,22 +245,12 @@ void openImage(const char* path) {
 
 void redrawTextEdit(bool scrub = false) {
   gScreen = Screen::TextEdit;
-  // No periodic HALF while typing — scrub once on open, then FAST only until
-  // idle / exit (maybeIdleScrubTextEdit).
-  canvasSetHoldCleanRefresh(true);
   uiDrawTextEdit(gTextTitle, gTextBuf, gOskSymbols, gOskShift, gTextMode, scrub);
-  if (scrub) {
-    gTextEditIdleScrubPending = false;
-  } else {
-    noteTextEditFastPaint();
-  }
 }
 
 void redrawTextEditFieldOnly() {
   gScreen = Screen::TextEdit;
-  canvasSetHoldCleanRefresh(true);
   uiRedrawTextEditField(gTextBuf, gTextMode);
-  noteTextEditFastPaint();
 }
 
 void openTextEditor(TextEditMode mode, const char* title, const char* initial, const char* path) {
@@ -331,8 +303,6 @@ bool nameLooksSafe(const char* name) {
 }
 
 void finishTextEdit(bool save) {
-  // Drop the hold so the explorer/home paint that follows can scrub ghosts.
-  canvasSetHoldCleanRefresh(false);
   canvasRequestCleanRefresh();
 
   if (!save) {
@@ -545,14 +515,13 @@ void showShade() {
   canvasSetHoldCleanRefresh(false);
   gScreen = Screen::Shade;
   refreshSlots();
-  canvasRequestCleanRefresh();
   uiDrawShade(gSpace);
 }
 
 void closeShade() {
+  canvasSetHoldCleanRefresh(false);
   const Screen back = gShadeReturn;
   gShadeReturn = Screen::Home;
-  canvasRequestCleanRefresh();
   switch (back) {
     case Screen::Explorer:
       redrawExplorer();
@@ -579,29 +548,29 @@ void handleShadeHit(const UiHit& hit) {
       break;
     case UiHit::Kind::BrightnessMinus:
       boardSetBrightness(boardBrightness() - 5);
-      uiDrawShade(gSpace);
+      uiRedrawShadeControls(gSpace);
       break;
     case UiHit::Kind::BrightnessPlus:
       boardSetBrightness(boardBrightness() + 5);
-      uiDrawShade(gSpace);
+      uiRedrawShadeControls(gSpace);
       break;
     case UiHit::Kind::BrightnessSlider:
       if (hit.value >= 0) {
         boardSetBrightness(hit.value);
-        uiDrawShade(gSpace);
+        uiRedrawShadeControls(gSpace);
       }
       break;
     case UiHit::Kind::LightToggle:
       boardSetFrontlightOn(!boardFrontlightOn());
-      uiDrawShade(gSpace);
+      uiRedrawShadeControls(gSpace);
       break;
     case UiHit::Kind::ScrubNow: {
-      // Nuclear: black/white flash, redraw underlying UI, full scrub.
+      // A multi-pass black/white recovery is reserved for stable external
+      // power; on battery a single clean redraw avoids a sustained rail load.
       const Screen back = gShadeReturn;
       gShadeReturn = Screen::Home;
       canvasSetHoldCleanRefresh(false);
-      canvasNuclearFlash();
-      canvasRequestCleanRefresh();
+      if (boardPower().plugged) canvasNuclearFlash();
       switch (back) {
         case Screen::Explorer:
           redrawExplorer();
@@ -619,7 +588,7 @@ void handleShadeHit(const UiHit& hit) {
           showHome();
           break;
       }
-      canvasPresent(EInkDisplay::FULL_REFRESH);
+      canvasPresent(EInkDisplay::HALF_REFRESH);
       break;
     }
     case UiHit::Kind::Settings:
@@ -644,13 +613,13 @@ void handleExplorerHit(const UiHit& hit) {
     case UiHit::Kind::ScrollUp:
       if (gScroll > 0) {
         gScroll--;
-        redrawExplorer();
+        redrawExplorer(true);
       }
       break;
     case UiHit::Kind::ScrollDown:
       if (gScroll + visible < static_cast<int>(gEntries.size())) {
         gScroll++;
-        redrawExplorer();
+        redrawExplorer(true);
       }
       break;
     case UiHit::Kind::SelectEntry:
@@ -659,7 +628,7 @@ void handleExplorerHit(const UiHit& hit) {
       } else {
         gSelected = hit.index;
         gSheetOpen = false;
-        redrawExplorer();
+        redrawExplorer(true);
       }
       break;
     case UiHit::Kind::ExplorerOpen:
@@ -772,6 +741,10 @@ void handleTextHit(const UiHit& hit) {
     int x = 0, y = 0;
     if (!boardPollTouch(x, y)) break;
     const UiHit next = uiHitTextEdit(x, y, gOskSymbols, gOskShift);
+    if (next.kind == UiHit::Kind::OpenShade) {
+      showShade();
+      return;
+    }
     if (applyTextHit(next, textChanged, layoutChanged)) return;
   }
 
@@ -998,11 +971,8 @@ void setup() {
 
   uiDrawSplash();
   delay(1200);
-  // Full white wipe so the splash does not ghost over the first home frame.
-  canvasClear();
-  canvasPresent(EInkDisplay::FULL_REFRESH);
-  delay(80);
-
+  // The splash is already a clean frame. Home arrives quickly through FAST,
+  // then the scheduler refines it once the launcher is idle.
   showHome();
   noteActivity();
 }
@@ -1047,18 +1017,21 @@ void loop() {
       const int steps = std::max(1, abs(dy) / uiExplorerRowHeight());
       if (dy < 0) gScroll = std::min(maxScroll, gScroll + steps);
       else gScroll = std::max(0, gScroll - steps);
-      redrawExplorer();
+      redrawExplorer(true);
       return;
     }
   }
 
   if (gScreen == Screen::Shade) {
     int hx = 0, hy = 0;
+    bool draggingBrightness = false;
     if (boardTouchHeld(hx, hy)) {
       noteActivity();
       int bx, by, bw, bh;
       uiShadeBrightnessTrack(bx, by, bw, bh);
       if (hy >= by - 20 && hy <= by + bh + 20 && hx >= bx && hx <= bx + bw) {
+        draggingBrightness = true;
+        canvasSetHoldCleanRefresh(true);
         static int lastBright = -1;
         const int pct = uiBrightnessFromTouchX(hx);
         if (pct != lastBright) {
@@ -1066,13 +1039,14 @@ void loop() {
           boardSetBrightness(pct);
           static uint32_t lastDraw = 0;
           const uint32_t now = millis();
-          if (now - lastDraw > 400) {
+          if (now - lastDraw > 180) {
             lastDraw = now;
-            uiDrawShade(gSpace);
+            uiRedrawShadeControls(gSpace);
           }
         }
       }
     }
+    if (!draggingBrightness) canvasSetHoldCleanRefresh(false);
   }
 
   int x = 0, y = 0;
@@ -1082,7 +1056,7 @@ void loop() {
     handleTouch(x, y);
   }
 
-  maybeIdleScrubTextEdit();
+  canvasServiceRefresh();
   maybeIdleScrubHome();
 
   if (gScreen == Screen::Home) {
@@ -1090,7 +1064,7 @@ void loop() {
     if (c.valid && c.minute != gLastClockMinute) {
       gLastClockMinute = c.minute;
       refreshSlots();
-      uiDrawHome(gSlots, gSpace);
+      uiRedrawHomeStatus(gSpace);
       gLastHomeScrubMs = millis();
     }
   }

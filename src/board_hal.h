@@ -30,7 +30,7 @@ void boardInitFrontlight();
 void boardMarkFactoryValid();
 void boardPrepareDeepSleep();
 
-// E-ink scrub cadence (1 = every frame, higher = fewer flashes). Persisted.
+// E-ink FAST budget in full-screen-equivalents (higher = fewer clean flashes).
 int boardCleanEvery();
 void boardSetCleanEvery(int n);
 
