@@ -5,7 +5,9 @@
 // Draw a random BMP from /sleep or /.sleep (same folders many readers use), then
 // deep-sleep. Falls back to a plain white frame if none are found.
 // quiet=true skips the "Entering sleep..." toast (used on debounce / short-press re-sleep).
-void enterSleepWithScreensaver(bool quiet = false);
+// Returns false if BOOT is held long enough during entry so wake can take priority
+// (never returns on a successful deep-sleep).
+bool enterSleepWithScreensaver(bool quiet = false);
 
 // Call at the start of setup(), before display and SD init. BOOT wakes from
 // deep sleep; hold for `needMs` measured from the wake reset to stay awake.

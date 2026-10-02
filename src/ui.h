@@ -86,7 +86,7 @@ struct UiHit {
 // Centered brand splash shown once at boot before the home UI.
 void uiDrawSplash();
 
-void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space);
+void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space, bool stable = false);
 
 struct ExplorerDrawState {
   ExplorerMode mode = ExplorerMode::Browse;

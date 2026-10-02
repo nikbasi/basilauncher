@@ -294,8 +294,11 @@ void drawStatusBar(const FlashSpace& space, bool showClosedGrabber) {
     const int battX = clusterRight - textSlot - kTextGap - kBatterySpan;
     const int boltX = battX - kBoltSlot;
     const int battY = timeY + (timeH - 14) / 2;
-    if (power.charging) drawLightningBolt(boltX, battY - 3);
+    // Wipe the icon strip first so FAST updates cannot leave a bolt ghost under
+    // the battery cell (common right after the boot splash).
+    canvasFillRect(boltX, battY - 3, kBoltSlot + kBatterySpan + 2, 20, false);
     drawBatteryGlyph(battX, battY, power.percent, power.charging, power.plugged);
+    if (power.charging) drawLightningBolt(boltX, battY - 3);
     canvasDrawString(clusterRight - canvasTextWidth(batt, kBody),
                      timeY + (timeH - canvasTextHeight(kBody)) / 2, batt, true, kBody);
   } else {
@@ -474,7 +477,7 @@ void filesChipRect(int& x, int& y, int& w, int& h) {
   h = kHomeFooterH - 16;
 }
 
-void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space) {
+void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space, bool stable) {
   canvasClear();
   drawStatusBar(space, true);
 
@@ -494,7 +497,10 @@ void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space) {
   snprintf(freeLine, sizeof(freeLine), "free %s", freeBuf);
   const int freeY = fy + (fh - canvasTextHeight(kSmall)) / 2;
   canvasDrawString(kScreenW - kPad - canvasTextWidth(freeLine, kSmall), freeY, freeLine, true, kSmall);
-  presentNavigation();
+  // Boot arrives from a full splash refresh; a FAST home leaves the charging
+  // bolt ghosted under the battery until the settle scrub. Paint clean once.
+  if (stable) presentQuality();
+  else presentNavigation();
 }
 
 void uiRedrawStatusBar(const FlashSpace& space, bool showClosedGrabber) {

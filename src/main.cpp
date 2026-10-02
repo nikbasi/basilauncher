@@ -129,7 +129,7 @@ void showMessage(const char* title, const char* body, bool returnExplorer) {
   uiDrawMessage(title, body);
 }
 
-void showHome() {
+void showHome(bool stable = false) {
   canvasSetHoldCleanRefresh(false);
   gScreen = Screen::Home;
   gAssignSlot = -1;
@@ -137,7 +137,7 @@ void showHome() {
   clearExplorerSelection();
   gSheetOpen = false;
   refreshSlots();
-  uiDrawHome(gSlots, gSpace);
+  uiDrawHome(gSlots, gSpace, stable);
   const BoardClockInfo c = boardClock();
   gLastClockMinute = c.valid ? c.minute : 255;
   gLastHomeScrubMs = millis();
@@ -1092,9 +1092,8 @@ void setup() {
 
   uiDrawSplash();
   delay(1200);
-  // The splash is already a clean frame. Home arrives quickly through FAST,
-  // then the scheduler refines it once the launcher is idle.
-  showHome();
+  // Clean home so the charging icons are sharp on the first frame.
+  showHome(true);
   noteActivity();
 }
 

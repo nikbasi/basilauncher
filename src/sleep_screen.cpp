@@ -123,27 +123,59 @@ bool wokeFromBootButton() {
   return false;
 }
 
+// If BOOT is already down, wait for a wake-length hold and abort sleep entry.
+// Gives a second press priority over finishing a sleep-image change.
+bool abortSleepForBootHold(uint32_t needMs = 600) {
+  if (!bootPinPressed()) return false;
+  if (needMs < 40) needMs = 40;
+  const uint32_t start = millis();
+  while (bootPinPressed()) {
+    if (millis() - start >= needMs) {
+      Serial.println("Wake: BOOT hold during sleep entry — staying awake");
+      waitBootReleased();
+      return true;
+    }
+    delay(10);
+  }
+  return false;
+}
+
 }  // namespace
 
-void enterSleepWithScreensaver(bool quiet) {
+bool enterSleepWithScreensaver(bool quiet) {
   if (!quiet) {
+    // Release the hold-to-sleep press before we start listening for wake.
+    waitBootReleased();
     // Large top toast so the sleep transition is obvious.
     drawSleepBanner("Entering sleep...", /*top=*/true, /*scale=*/2);
     canvasPresentFor(CanvasRefreshIntent::Navigation);
     delay(300);
+    if (abortSleepForBootHold()) return false;
   }
+
+  // Prefer wake over starting a slow image swap after a short BOOT tap.
+  if (abortSleepForBootHold()) return false;
 
   if (!pickAndDrawRandom()) {
     canvasClear();
   }
+  if (abortSleepForBootHold()) return false;
+
   drawSleepBanner("Press BOOT to wake", /*top=*/false, /*scale=*/1);
+  if (abortSleepForBootHold()) return false;
+
   canvasPresentFor(CanvasRefreshIntent::Sleep);
+  // A hold across the long refresh should wake without another full hold.
+  if (abortSleepForBootHold(bootPinPressed() ? 80 : 600)) return false;
+
   delay(200);
+  if (abortSleepForBootHold()) return false;
 
   waitBootReleased();
   armBootWakeup();
   boardPrepareDeepSleep();
   esp_deep_sleep_start();
+  return true;  // not reached
 }
 
 bool sleepBootHoldKeepsAwake(uint32_t needMs) {
