@@ -283,16 +283,21 @@ void drawStatusBar(const FlashSpace& space, bool showClosedGrabber) {
 
   char batt[20];
   if (power.known) {
-    if (power.charging) snprintf(batt, sizeof(batt), "%d%%", power.percent);
-    else if (power.plugged) snprintf(batt, sizeof(batt), "%d%% USB", power.percent);
-    else snprintf(batt, sizeof(batt), "%d%%", power.percent);
-    const int tw = canvasTextWidth(batt, kBody);
-    const int boltW = power.charging ? 18 : 0;
-    const int bx = kScreenW - kPad - tw - 36 - boltW;
+    snprintf(batt, sizeof(batt), "%d%%", power.percent);
+    // Keep bolt and battery fixed so cable changes do not shove the glyphs
+    // left and leave FAST-refresh ghosts.
+    constexpr int kBoltSlot = 18;
+    constexpr int kBatterySpan = 31;
+    constexpr int kTextGap = 3;
+    const int textSlot = canvasTextWidth("100%", kBody);
+    const int clusterRight = kScreenW - kPad;
+    const int battX = clusterRight - textSlot - kTextGap - kBatterySpan;
+    const int boltX = battX - kBoltSlot;
     const int battY = timeY + (timeH - 14) / 2;
-    if (power.charging) drawLightningBolt(bx, battY - 3);
-    drawBatteryGlyph(bx + boltW, battY, power.percent, power.charging, power.plugged);
-    canvasDrawString(bx + boltW + 34, timeY + (timeH - canvasTextHeight(kBody)) / 2, batt, true, kBody);
+    if (power.charging) drawLightningBolt(boltX, battY - 3);
+    drawBatteryGlyph(battX, battY, power.percent, power.charging, power.plugged);
+    canvasDrawString(clusterRight - canvasTextWidth(batt, kBody),
+                     timeY + (timeH - canvasTextHeight(kBody)) / 2, batt, true, kBody);
   } else {
     const char* na = "batt --";
     canvasDrawString(kScreenW - kPad - canvasTextWidth(na, kBody),

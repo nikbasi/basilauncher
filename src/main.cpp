@@ -1161,13 +1161,27 @@ void loop() {
   }
 
   if (gScreen == Screen::Shade) {
+    // Only drag brightness when the press started on the track. A swipe-up to
+    // close crosses the bar and must not turn the light on mid-gesture.
+    static bool brightDragArmed = false;
+    static bool shadeTouchSeen = false;
+    static int shadeTouchStartY = 0;
     int hx = 0, hy = 0;
     bool draggingBrightness = false;
     if (boardTouchHeld(hx, hy)) {
       noteActivity();
       int bx, by, bw, bh;
       uiShadeBrightnessTrack(bx, by, bw, bh);
-      if (hy >= by - 20 && hy <= by + bh + 20 && hx >= bx && hx <= bx + bw) {
+      const bool overTrack =
+          hy >= by - 20 && hy <= by + bh + 20 && hx >= bx && hx <= bx + bw;
+      if (!shadeTouchSeen) {
+        shadeTouchSeen = true;
+        shadeTouchStartY = hy;
+        brightDragArmed = overTrack;
+      } else if (brightDragArmed && abs(hy - shadeTouchStartY) > 40) {
+        brightDragArmed = false;
+      }
+      if (brightDragArmed && overTrack) {
         draggingBrightness = true;
         canvasSetHoldCleanRefresh(true);
         static int lastBright = -1;
@@ -1183,6 +1197,9 @@ void loop() {
           }
         }
       }
+    } else {
+      shadeTouchSeen = false;
+      brightDragArmed = false;
     }
     if (!draggingBrightness) canvasSetHoldCleanRefresh(false);
   }
