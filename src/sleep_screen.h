@@ -7,7 +7,8 @@
 // quiet=true skips the "Entering sleep..." toast (used on debounce / short-press re-sleep).
 void enterSleepWithScreensaver(bool quiet = false);
 
-// Call early in setup(). BOOT wakes from deep sleep; hold for `needMs` to stay
-// awake. A short press (or USB glitch pulse) picks another sleep image and
-// re-sleeps quietly.
-void sleepRequireBootHoldToWake(uint32_t needMs = 1500);
+// Call at the start of setup(), before display and SD init. BOOT wakes from
+// deep sleep; hold for `needMs` measured from the wake reset to stay awake.
+// Returns false when the press was released early: finish display init, then
+// call enterSleepWithScreensaver(true) so a tap still cycles the sleep image.
+bool sleepBootHoldKeepsAwake(uint32_t needMs = 600);

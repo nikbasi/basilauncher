@@ -492,12 +492,14 @@ void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space) {
   presentNavigation();
 }
 
-void uiRedrawHomeStatus(const FlashSpace& space) {
+void uiRedrawStatusBar(const FlashSpace& space, bool showClosedGrabber) {
   const int h = statusBarH();
   canvasFillRect(0, 0, kScreenW, h, false);
-  drawStatusBar(space, true);
+  drawStatusBar(space, showClosedGrabber);
   canvasPresentFor(CanvasRefreshIntent::InteractiveLocal, {0, 0, kScreenW, h});
 }
+
+void uiRedrawHomeStatus(const FlashSpace& space) { uiRedrawStatusBar(space, true); }
 
 constexpr int kExplorerRowH = 72;
 
@@ -1147,6 +1149,15 @@ const char* monthName(int month) {
   return names[month];
 }
 
+void hardwareChipRect(int& x, int& y, int& w, int& h) {
+  const SettingsGeom g = settingsGeom();
+  h = 40;
+  w = canvasTextWidth("Hardware", kBody) + 28;
+  x = kScreenW - kPad - w;
+  const int titleH = canvasTextHeight(kTitle);
+  y = g.titleY + (titleH - h) / 2;
+}
+
 void uiDrawSettings(const FlashSpace& space) {
   canvasClear();
   drawStatusBar(space, true);
@@ -1154,6 +1165,9 @@ void uiDrawSettings(const FlashSpace& space) {
   constexpr int step = kStepBtn;
 
   canvasDrawString(kPad, g.titleY, "Settings", true, kTitle);
+  int hx, hy, hw, hh;
+  hardwareChipRect(hx, hy, hw, hh);
+  drawOutlineBtn(hx, hy, hw, hh, "Hardware");
 
   const char* sizeTxt = "Med";
   if (boardUiTextSize() <= 0) sizeTxt = "Small";
@@ -1198,7 +1212,7 @@ void uiDrawSettings(const FlashSpace& space) {
 
   drawOutlineBtn(kPad, g.powerY, kScreenW - 2 * kPad, kActionBtnH, "Sleep / power off");
   drawFilledBtn(kPad, g.backY, kScreenW - 2 * kPad, kActionBtnH, "Back");
-  canvasDrawString(kPad, g.tipY, "Hold BOOT to sleep or wake.", true, kSmall);
+  canvasDrawString(kPad, g.tipY, "Hold BOOT to sleep. Press to wake.", true, kSmall);
   presentNavigation();
 }
 
@@ -1209,6 +1223,12 @@ UiHit uiHitSettings(int x, int y) {
     return hit;
   }
   const SettingsGeom g = settingsGeom();
+  int hx, hy, hw, hh;
+  hardwareChipRect(hx, hy, hw, hh);
+  if (y >= hy && y < hy + hh && x >= hx && x < hx + hw) {
+    hit.kind = UiHit::Kind::Hardware;
+    return hit;
+  }
   constexpr int step = kStepBtn;
   const int minusX = g.rowMinusX;
   const int plusX = g.rowPlusX;
@@ -1242,6 +1262,70 @@ UiHit uiHitSettings(int x, int y) {
   if (y >= g.backY && y < g.backY + kActionBtnH && x >= kPad && x < kScreenW - kPad) {
     hit.kind = UiHit::Kind::Back;
     return hit;
+  }
+  return hit;
+}
+
+int drawHardwareRow(int y, const char* label, const char* value) {
+  const int h = canvasTextHeight(kBody);
+  canvasDrawString(kPad, y, label, true, kBody);
+  const int valueW = canvasTextWidth(value ? value : "", kBody);
+  canvasDrawString(kScreenW - kPad - valueW, y, value ? value : "", true, kBody);
+  return y + h + 14;
+}
+
+int drawHardwareRule(int y) {
+  y += 4;
+  canvasDrawLine(kPad, y, kScreenW - kPad - 1, y, true);
+  return y + 16;
+}
+
+void uiDrawHardware(const FlashSpace& space) {
+  canvasClear();
+  drawStatusBar(space, true);
+  const BoardDeviceInfo device = boardDeviceInfo();
+  int y = statusBarH() + kPad;
+  canvasDrawString(kPad, y, "Hardware", true, kTitle);
+  y += canvasTextHeight(kTitle) + 22;
+
+  y = drawHardwareRow(y, "Board", device.product);
+  y = drawHardwareRow(y, "Panel", device.panel);
+  y = drawHardwareRow(y, "Touch", device.touch);
+  y = drawHardwareRow(y, "Light", device.light);
+  y = drawHardwareRule(y);
+  y = drawHardwareRow(y, "MCU", device.mcu);
+  y = drawHardwareRow(y, "CPU", device.cpu);
+  y = drawHardwareRow(y, "Memory", device.memory);
+  y = drawHardwareRow(y, "MAC", device.mac);
+  y = drawHardwareRow(y, "Launcher", BASILAUNCHER_VERSION);
+  y = drawHardwareRule(y);
+  y = drawHardwareRow(y, "Battery", device.battery);
+  y = drawHardwareRow(y, "RTC", device.rtc);
+  y = drawHardwareRow(y, "SD card", device.storage);
+  y = drawHardwareRule(y);
+  y = drawHardwareRow(y, "LoRa", device.lora);
+  y = drawHardwareRow(y, "GPS", device.gps);
+
+  char freeBuf[16], totalBuf[16], slots[40];
+  appsFormatBytes(space.guestFree, freeBuf, sizeof(freeBuf));
+  appsFormatBytes(space.guestTotal, totalBuf, sizeof(totalBuf));
+  snprintf(slots, sizeof(slots), "%s free / %s", freeBuf, totalBuf);
+  drawHardwareRow(y, "App slots", slots);
+
+  const int backY = kScreenH - kPad - kActionBtnH;
+  drawFilledBtn(kPad, backY, kScreenW - 2 * kPad, kActionBtnH, "Back");
+  presentNavigation();
+}
+
+UiHit uiHitHardware(int x, int y) {
+  UiHit hit;
+  if (y < statusBarH()) {
+    hit.kind = UiHit::Kind::OpenShade;
+    return hit;
+  }
+  const int backY = kScreenH - kPad - kActionBtnH;
+  if (y >= backY && y < backY + kActionBtnH && x >= kPad && x < kScreenW - kPad) {
+    hit.kind = UiHit::Kind::Back;
   }
   return hit;
 }

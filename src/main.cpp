@@ -584,7 +584,8 @@ void clearSlot(int slotIndex) {
 void showShade() {
   // Remember the underlying screen so Close returns there (not always Home).
   // Settings is reached from the shade itself — keep the prior return target.
-  if (gScreen == Screen::Home || gScreen == Screen::Explorer || gScreen == Screen::TextEdit) {
+  if (gScreen == Screen::Home || gScreen == Screen::Explorer || gScreen == Screen::TextEdit ||
+      gScreen == Screen::Hardware) {
     gShadeReturn = gScreen;
   }
   canvasSetHoldCleanRefresh(false);
@@ -608,6 +609,11 @@ void closeShade() {
       gScreen = Screen::Settings;
       refreshSlots();
       uiDrawSettings(gSpace);
+      break;
+    case Screen::Hardware:
+      gScreen = Screen::Hardware;
+      refreshSlots();
+      uiDrawHardware(gSpace);
       break;
     case Screen::Home:
     default:
@@ -657,6 +663,11 @@ void handleShadeHit(const UiHit& hit) {
           gScreen = Screen::Settings;
           refreshSlots();
           uiDrawSettings(gSpace);
+          break;
+        case Screen::Hardware:
+          gScreen = Screen::Hardware;
+          refreshSlots();
+          uiDrawHardware(gSpace);
           break;
         case Screen::Home:
         default:
@@ -932,6 +943,10 @@ void handleTouch(int x, int y) {
 
     if (hit.kind == UiHit::Kind::Back) {
       showShade();
+    } else if (hit.kind == UiHit::Kind::Hardware) {
+      gScreen = Screen::Hardware;
+      refreshSlots();
+      uiDrawHardware(gSpace);
     } else if (hit.kind == UiHit::Kind::OpenShade) {
       showShade();
     } else if (hit.kind == UiHit::Kind::PowerOff) {
@@ -985,6 +1000,17 @@ void handleTouch(int x, int y) {
       uiDrawSettings(gSpace);
     } else if (hit.kind == UiHit::Kind::DayPlus) {
       adjustDate(0, 0, 1);
+      uiDrawSettings(gSpace);
+    }
+    return;
+  }
+
+  if (gScreen == Screen::Hardware) {
+    const UiHit hit = uiHitHardware(x, y);
+    if (hit.kind == UiHit::Kind::OpenShade) showShade();
+    else if (hit.kind == UiHit::Kind::Back) {
+      gScreen = Screen::Settings;
+      refreshSlots();
       uiDrawSettings(gSpace);
     }
     return;
@@ -1044,6 +1070,9 @@ void setup() {
   delay(200);
   Serial.println("Basilauncher " BASILAUNCHER_VERSION);
 
+  // Decide the wake hold before the slow panel and SD startup.
+  const bool stayAwake = sleepBootHoldKeepsAwake(600);
+
   boardMarkFactoryValid();
   boardInit();
 
@@ -1057,7 +1086,9 @@ void setup() {
   boardInitFrontlight();
   appsLoadSlotLabels();
 
-  sleepRequireBootHoldToWake(1500);
+  if (!stayAwake) {
+    enterSleepWithScreensaver(/*quiet=*/true);
+  }
 
   uiDrawSplash();
   delay(1200);
@@ -1106,7 +1137,8 @@ void loop() {
     const bool fromTop = y0 < 120;
     const bool pullDown = fromTop && dy > 80 && abs(dy) > abs(dx);
     const bool canShade = gScreen == Screen::Home || gScreen == Screen::Explorer ||
-                          gScreen == Screen::TextEdit || gScreen == Screen::Settings;
+                          gScreen == Screen::TextEdit || gScreen == Screen::Settings ||
+                          gScreen == Screen::Hardware;
     if (canShade && pullDown) {
       showShade();
       return;
@@ -1164,6 +1196,14 @@ void loop() {
 
   canvasServiceRefresh();
   maybeIdleScrubHome();
+
+  if (gScreen != Screen::ImageView && boardPowerConnectionChanged()) {
+    const bool grabber = gScreen == Screen::Home || gScreen == Screen::Explorer ||
+                         gScreen == Screen::Settings || gScreen == Screen::Hardware ||
+                         gScreen == Screen::TextEdit;
+    if (gScreen != Screen::Progress) canvasRequestCleanRefresh();
+    uiRedrawStatusBar(gSpace, grabber);
+  }
 
   if (gScreen == Screen::Home) {
     const BoardClockInfo c = boardClock();

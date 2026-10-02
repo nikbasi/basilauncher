@@ -7,6 +7,7 @@ enum class Screen {
   Home,
   Explorer,
   Settings,
+  Hardware,
   Shade,
   Progress,
   Message,
@@ -27,6 +28,7 @@ struct UiHit {
     AssignSlot,
     OpenFiles,
     Settings,
+    Hardware,
     Back,
     PowerOff,
     SelectEntry,
@@ -107,9 +109,11 @@ void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawStat
 void uiRedrawExplorerViewport(const std::vector<DirEntry>& entries, const ExplorerDrawState& st);
 
 void uiDrawSettings(const FlashSpace& space);
+void uiDrawHardware(const FlashSpace& space);
 void uiDrawShade(const FlashSpace& space);
 void uiRedrawShadeControls(const FlashSpace& space);
 void uiRedrawHomeStatus(const FlashSpace& space);
+void uiRedrawStatusBar(const FlashSpace& space, bool showClosedGrabber);
 void uiDrawProgress(const char* title, int percent);
 void uiDrawMessage(const char* title, const char* body);
 void uiDrawConfirm(const char* title, const char* body);
@@ -125,6 +129,7 @@ UiHit uiHitHome(int x, int y);
 UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool sheetOpen,
                     bool clipboardHas, int selectedCount);
 UiHit uiHitSettings(int x, int y);
+UiHit uiHitHardware(int x, int y);
 UiHit uiHitShade(int x, int y);
 UiHit uiHitConfirm(int x, int y);
 UiHit uiHitTextEdit(int x, int y, bool symbols, bool shift);

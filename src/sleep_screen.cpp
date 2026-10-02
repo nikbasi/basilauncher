@@ -136,7 +136,7 @@ void enterSleepWithScreensaver(bool quiet) {
   if (!pickAndDrawRandom()) {
     canvasClear();
   }
-  drawSleepBanner("Hold BOOT to wake", /*top=*/false, /*scale=*/1);
+  drawSleepBanner("Press BOOT to wake", /*top=*/false, /*scale=*/1);
   canvasPresentFor(CanvasRefreshIntent::Sleep);
   delay(200);
 
@@ -146,29 +146,23 @@ void enterSleepWithScreensaver(bool quiet) {
   esp_deep_sleep_start();
 }
 
-void sleepRequireBootHoldToWake(uint32_t needMs) {
-  if (!wokeFromBootButton()) return;
+bool sleepBootHoldKeepsAwake(uint32_t needMs) {
+  if (!wokeFromBootButton()) return true;
 
-  // Debounce USB/JTAG glitches that pulse GPIO0 without a finger on the button.
-  delay(40);
-  if (!bootPinPressed()) {
-    Serial.println("Wake: BOOT glitch — sleeping again");
-    enterSleepWithScreensaver(/*quiet=*/true);
-    return;
-  }
-
-  // Hold to stay awake; short press cycles to another sleep image.
+  // millis() starts at the wake reset, while the button is already down, so
+  // this wait is the whole hold. It must run before display and SD init or
+  // that startup time gets added on top of needMs.
   if (needMs < 40) needMs = 40;
-  const uint32_t start = millis();
   while (bootPinPressed()) {
-    if ((millis() - start) >= needMs) {
+    if (millis() >= needMs) {
       Serial.println("Wake: BOOT hold — staying awake");
       waitBootReleased();
-      return;
+      return true;
     }
     delay(10);
   }
 
-  Serial.println("Wake: BOOT tap — next sleep image");
-  enterSleepWithScreensaver(/*quiet=*/true);
+  Serial.printf("Wake: BOOT released after %lums — sleeping again\n",
+                static_cast<unsigned long>(millis()));
+  return false;
 }
