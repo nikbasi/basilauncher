@@ -27,7 +27,7 @@ From [Releases](https://github.com/nikbasi/basilauncher/releases), download
 ```bash
 PORT=/dev/cu.usbmodem101   # Windows: COMx
 
-esptool.py --chip esp32s3 -p "$PORT" write-flash 0x0 basilauncher-1.4.27-full.bin
+esptool.py --chip esp32s3 -p "$PORT" write-flash 0x0 basilauncher-1.4.28-full.bin
 ```
 
 Rebuild a full image after `pio run`:

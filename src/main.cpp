@@ -12,6 +12,8 @@
 #include "sd_serial.h"
 #include "sleep_screen.h"
 #include "ui.h"
+#include "wifi_server.h"
+#include "wifi_session.h"
 
 #include <SD.h>
 
@@ -581,11 +583,64 @@ void clearSlot(int slotIndex) {
   showHome();
 }
 
+void redrawWifi() {
+  gScreen = Screen::Wifi;
+  const WifiStatus st = wifiGetStatus();
+  const bool active = wifiIsActive();
+  const bool station = st.mode == WifiMode::Station;
+  const char* status =
+      !active ? "Off" : (station ? "Joined network" : "Hotspot on");
+  char detail[96];
+  detail[0] = 0;
+  const char* msg = wifiServerLastMessage();
+  if (msg && msg[0]) {
+    snprintf(detail, sizeof(detail), "%s", msg);
+  } else if (st.detail[0]) {
+    snprintf(detail, sizeof(detail), "%s", st.detail);
+  }
+  uiDrawWifi(gSpace, status, st.ssid, st.url, detail, wifiHasSavedNetwork(), active, station);
+}
+
+void stopWifiSession() {
+  wifiServerStop();
+  wifiStop();
+}
+
+void startWifiHotspot() {
+  uiDrawProgress("Starting hotspot...", 10);
+  if (!wifiStartSoftAp() || !wifiServerStart()) {
+    stopWifiSession();
+    showMessage("Wi‑Fi failed", "Could not start the hotspot.", false);
+    return;
+  }
+  wifiServerClearMessage();
+  redrawWifi();
+}
+
+void startWifiStation() {
+  char ssid[33];
+  wifiGetSavedSsid(ssid, sizeof(ssid));
+  char title[48];
+  snprintf(title, sizeof(title), "Joining %s...", ssid[0] ? ssid : "Wi‑Fi");
+  uiDrawProgress(title, 10);
+  if (!wifiStartStation(20000) || !wifiServerStart()) {
+    stopWifiSession();
+    showMessage("Wi‑Fi failed", "Could not join the saved network.", false);
+    return;
+  }
+  wifiServerClearMessage();
+  redrawWifi();
+}
+
+void showWifi() {
+  redrawWifi();
+}
+
 void showShade() {
   // Remember the underlying screen so Close returns there (not always Home).
   // Settings is reached from the shade itself — keep the prior return target.
   if (gScreen == Screen::Home || gScreen == Screen::Explorer || gScreen == Screen::TextEdit ||
-      gScreen == Screen::Hardware) {
+      gScreen == Screen::Hardware || gScreen == Screen::Wifi) {
     gShadeReturn = gScreen;
   }
   canvasSetHoldCleanRefresh(false);
@@ -614,6 +669,9 @@ void closeShade() {
       gScreen = Screen::Hardware;
       refreshSlots();
       uiDrawHardware(gSpace);
+      break;
+    case Screen::Wifi:
+      redrawWifi();
       break;
     case Screen::Home:
     default:
@@ -668,6 +726,9 @@ void handleShadeHit(const UiHit& hit) {
           gScreen = Screen::Hardware;
           refreshSlots();
           uiDrawHardware(gSpace);
+          break;
+        case Screen::Wifi:
+          redrawWifi();
           break;
         case Screen::Home:
         default:
@@ -947,6 +1008,8 @@ void handleTouch(int x, int y) {
       gScreen = Screen::Hardware;
       refreshSlots();
       uiDrawHardware(gSpace);
+    } else if (hit.kind == UiHit::Kind::Wifi) {
+      showWifi();
     } else if (hit.kind == UiHit::Kind::OpenShade) {
       showShade();
     } else if (hit.kind == UiHit::Kind::PowerOff) {
@@ -1012,6 +1075,40 @@ void handleTouch(int x, int y) {
       gScreen = Screen::Settings;
       refreshSlots();
       uiDrawSettings(gSpace);
+    }
+    return;
+  }
+
+  if (gScreen == Screen::Wifi) {
+    const WifiStatus st = wifiGetStatus();
+    const bool active = wifiIsActive();
+    const bool station = st.mode == WifiMode::Station;
+    const UiHit hit = uiHitWifi(x, y, wifiHasSavedNetwork(), active, station);
+    if (hit.kind == UiHit::Kind::Back) {
+      stopWifiSession();
+      gScreen = Screen::Settings;
+      uiDrawSettings(gSpace);
+    } else if (hit.kind == UiHit::Kind::OpenShade) {
+      showShade();
+    } else if (hit.kind == UiHit::Kind::WifiStartAp) {
+      startWifiHotspot();
+    } else if (hit.kind == UiHit::Kind::WifiJoinSaved) {
+      startWifiStation();
+    } else if (hit.kind == UiHit::Kind::WifiStop) {
+      stopWifiSession();
+      redrawWifi();
+    } else if (hit.kind == UiHit::Kind::WifiSyncClock) {
+      uiDrawProgress("Syncing clock...", 20);
+      if (wifiSyncClock()) {
+        wifiServerClearMessage();
+      } else {
+        // Surface failure on the Wi‑Fi screen detail line.
+        // Reuse last-message buffer via a static note in status redraw.
+      }
+      redrawWifi();
+    } else if (hit.kind == UiHit::Kind::WifiForget) {
+      wifiClearSavedNetwork();
+      redrawWifi();
     }
     return;
   }
@@ -1112,6 +1209,18 @@ void loop() {
   if (gScreen != Screen::Progress) {
     sdSerialPoll();
   }
+  if (gScreen == Screen::Wifi || wifiIsActive()) {
+    wifiPoll();
+    wifiServerPoll();
+    // Refresh the status line when an upload finishes.
+    static char lastMsg[96] = {};
+    const char* msg = wifiServerLastMessage();
+    if (gScreen == Screen::Wifi && msg && msg[0] && strcmp(lastMsg, msg) != 0) {
+      snprintf(lastMsg, sizeof(lastMsg), "%s", msg);
+      noteActivity();
+      redrawWifi();
+    }
+  }
 
   boardInputUpdate();
 
@@ -1120,6 +1229,7 @@ void loop() {
     bootSleepArmed = true;
   } else if (bootSleepArmed && boardPowerHeldMs() > 1500 && gScreen != Screen::Progress) {
     bootSleepArmed = false;
+    stopWifiSession();
     enterSleepWithScreensaver();
   }
 
@@ -1148,7 +1258,7 @@ void loop() {
     const bool pullDown = fromTop && dy > 80 && abs(dy) > abs(dx);
     const bool canShade = gScreen == Screen::Home || gScreen == Screen::Explorer ||
                           gScreen == Screen::TextEdit || gScreen == Screen::Settings ||
-                          gScreen == Screen::Hardware;
+                          gScreen == Screen::Hardware || gScreen == Screen::Wifi;
     if (canShade && pullDown) {
       showShade();
       return;
@@ -1227,7 +1337,7 @@ void loop() {
   if (gScreen != Screen::ImageView && boardPowerConnectionChanged()) {
     const bool grabber = gScreen == Screen::Home || gScreen == Screen::Explorer ||
                          gScreen == Screen::Settings || gScreen == Screen::Hardware ||
-                         gScreen == Screen::TextEdit;
+                         gScreen == Screen::Wifi || gScreen == Screen::TextEdit;
     if (gScreen != Screen::Progress) canvasRequestCleanRefresh();
     uiRedrawStatusBar(gSpace, grabber);
   }
@@ -1243,8 +1353,9 @@ void loop() {
   }
 
   const int sleepMin = boardSleepAfterMin();
-  if (sleepMin > 0 && gScreen != Screen::Progress &&
+  if (sleepMin > 0 && gScreen != Screen::Progress && gScreen != Screen::Wifi &&
       (millis() - gLastActiveMs) > static_cast<uint32_t>(sleepMin) * 60u * 1000u) {
+    stopWifiSession();
     enterSleepWithScreensaver();
   }
   delay(20);

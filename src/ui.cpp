@@ -168,6 +168,7 @@ struct SettingsGeom {
   int dayY = 0;
   int rowMinusX = 0;
   int rowPlusX = 0;
+  int wifiY = 0;
   int powerY = 0;
   int backY = 0;
   int tipY = 0;
@@ -207,8 +208,10 @@ SettingsGeom settingsGeom() {
   g.monthY = y;
   y += step + 8;
   g.dayY = y;
-  y += step + 18;
+  y += step + 16;
 
+  g.wifiY = y;
+  y += kActionBtnH + 10;
   g.powerY = y;
   y += kActionBtnH + 12;
   g.backY = y;
@@ -1221,6 +1224,7 @@ void uiDrawSettings(const FlashSpace& space) {
   snprintf(dayBuf, sizeof(dayBuf), "%u", clock.valid ? clock.day : 1);
   drawSettingsStepper(g.dayY, "Day", dayBuf, g.rowMinusX, g.rowPlusX);
 
+  drawOutlineBtn(kPad, g.wifiY, kScreenW - 2 * kPad, kActionBtnH, "Wi‑Fi transfer");
   drawOutlineBtn(kPad, g.powerY, kScreenW - 2 * kPad, kActionBtnH, "Sleep / power off");
   drawFilledBtn(kPad, g.backY, kScreenW - 2 * kPad, kActionBtnH, "Back");
   canvasDrawString(kPad, g.tipY, "Hold BOOT to sleep. Press to wake.", true, kSmall);
@@ -1266,6 +1270,10 @@ UiHit uiHitSettings(int x, int y) {
   if (hitStepper(g.monthY, UiHit::Kind::MonthMinus, UiHit::Kind::MonthPlus)) return hit;
   if (hitStepper(g.dayY, UiHit::Kind::DayMinus, UiHit::Kind::DayPlus)) return hit;
 
+  if (y >= g.wifiY && y < g.wifiY + kActionBtnH && x >= kPad && x < kScreenW - kPad) {
+    hit.kind = UiHit::Kind::Wifi;
+    return hit;
+  }
   if (y >= g.powerY && y < g.powerY + kActionBtnH && x >= kPad && x < kScreenW - kPad) {
     hit.kind = UiHit::Kind::PowerOff;
     return hit;
@@ -1334,10 +1342,98 @@ UiHit uiHitHardware(int x, int y) {
     hit.kind = UiHit::Kind::OpenShade;
     return hit;
   }
-  const int backY = kScreenH - kPad - kActionBtnH;
-  if (y >= backY && y < backY + kActionBtnH && x >= kPad && x < kScreenW - kPad) {
+  if (y >= kScreenH - kActionBtnH - kPad - 8 && y < kScreenH - kPad && x >= kPad &&
+      x < kScreenW - kPad) {
     hit.kind = UiHit::Kind::Back;
+    return hit;
   }
+  return hit;
+}
+
+void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssidLine,
+                const char* urlLine, const char* detailLine, bool hasSaved, bool active,
+                bool station) {
+  canvasClear();
+  drawStatusBar(space, true);
+  int y = statusBarH() + kPad;
+  canvasDrawString(kPad, y, "Wi‑Fi transfer", true, kTitle);
+  y += canvasTextHeight(kTitle) + 18;
+
+  auto line = [&](const char* label, const char* value) {
+    canvasDrawString(kPad, y, label, true, kSmall);
+    y += canvasTextHeight(kSmall) + 4;
+    canvasDrawString(kPad, y, value && value[0] ? value : "—", true, kBody);
+    y += canvasTextHeight(kBody) + 14;
+  };
+  line("Status", statusLine);
+  line("Network", ssidLine);
+  line("Open in browser", urlLine);
+  if (detailLine && detailLine[0]) {
+    canvasDrawString(kPad, y, detailLine, true, kSmall);
+    y += canvasTextHeight(kSmall) + 18;
+  } else {
+    y += 8;
+  }
+
+  const int btnW = kScreenW - 2 * kPad;
+  if (!active) {
+    drawFilledBtn(kPad, y, btnW, kActionBtnH, "Start hotspot");
+    y += kActionBtnH + 10;
+    if (hasSaved) {
+      drawOutlineBtn(kPad, y, btnW, kActionBtnH, "Join saved Wi‑Fi");
+      y += kActionBtnH + 10;
+    }
+  } else {
+    if (station) {
+      drawOutlineBtn(kPad, y, btnW, kActionBtnH, "Sync clock (NTP)");
+      y += kActionBtnH + 10;
+    }
+    drawOutlineBtn(kPad, y, btnW, kActionBtnH, "Stop Wi‑Fi");
+    y += kActionBtnH + 10;
+  }
+  if (hasSaved) {
+    drawOutlineBtn(kPad, y, btnW, kActionBtnH, "Forget saved network");
+    y += kActionBtnH + 10;
+  }
+  drawFilledBtn(kPad, kScreenH - kPad - kActionBtnH, btnW, kActionBtnH, "Back");
+  presentNavigation();
+}
+
+UiHit uiHitWifi(int x, int y, bool hasSaved, bool active, bool station) {
+  UiHit hit;
+  if (y < statusBarH()) {
+    hit.kind = UiHit::Kind::OpenShade;
+    return hit;
+  }
+  const int btnW = kScreenW - 2 * kPad;
+  const int backY = kScreenH - kPad - kActionBtnH;
+  if (y >= backY && y < backY + kActionBtnH && x >= kPad && x < kPad + btnW) {
+    hit.kind = UiHit::Kind::Back;
+    return hit;
+  }
+
+  int by = statusBarH() + kPad + canvasTextHeight(kTitle) + 18;
+  // Skip the four text blocks roughly matching uiDrawWifi layout.
+  by += (canvasTextHeight(kSmall) + 4 + canvasTextHeight(kBody) + 14) * 3;
+  by += canvasTextHeight(kSmall) + 18;
+
+  auto hitBtn = [&](UiHit::Kind kind) -> bool {
+    if (y >= by && y < by + kActionBtnH && x >= kPad && x < kPad + btnW) {
+      hit.kind = kind;
+      return true;
+    }
+    by += kActionBtnH + 10;
+    return false;
+  };
+
+  if (!active) {
+    if (hitBtn(UiHit::Kind::WifiStartAp)) return hit;
+    if (hasSaved && hitBtn(UiHit::Kind::WifiJoinSaved)) return hit;
+  } else {
+    if (station && hitBtn(UiHit::Kind::WifiSyncClock)) return hit;
+    if (hitBtn(UiHit::Kind::WifiStop)) return hit;
+  }
+  if (hasSaved && hitBtn(UiHit::Kind::WifiForget)) return hit;
   return hit;
 }
 

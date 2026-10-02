@@ -1,0 +1,207 @@
+#include "wifi_session.h"
+
+#include "board_hal.h"
+
+#include <DNSServer.h>
+#include <Preferences.h>
+#include <WiFi.h>
+#include <cstring>
+#include <time.h>
+
+namespace {
+
+constexpr const char* kApSsid = "Basilauncher";
+constexpr uint8_t kApChannel = 1;
+DNSServer* gDns = nullptr;
+WifiMode gMode = WifiMode::Off;
+char gSavedSsid[33] = {};
+char gSavedPass[65] = {};
+bool gCredsLoaded = false;
+
+void loadCreds() {
+  if (gCredsLoaded) return;
+  gCredsLoaded = true;
+  gSavedSsid[0] = 0;
+  gSavedPass[0] = 0;
+  Preferences prefs;
+  if (!prefs.begin("basil", true)) return;
+  const String ssid = prefs.getString("wifiSsid", "");
+  const String pass = prefs.getString("wifiPass", "");
+  prefs.end();
+  if (ssid.length() > 0 && ssid.length() < sizeof(gSavedSsid)) {
+    snprintf(gSavedSsid, sizeof(gSavedSsid), "%s", ssid.c_str());
+  }
+  if (pass.length() < sizeof(gSavedPass)) {
+    snprintf(gSavedPass, sizeof(gSavedPass), "%s", pass.c_str());
+  }
+}
+
+void stopDns() {
+  if (!gDns) return;
+  gDns->stop();
+  delete gDns;
+  gDns = nullptr;
+}
+
+void fillIp(char* out, size_t n, IPAddress ip) {
+  snprintf(out, n, "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+}
+
+}  // namespace
+
+bool wifiHasSavedNetwork() {
+  loadCreds();
+  return gSavedSsid[0] != 0;
+}
+
+void wifiGetSavedSsid(char* out, size_t outLen) {
+  loadCreds();
+  if (!out || outLen == 0) return;
+  snprintf(out, outLen, "%s", gSavedSsid);
+}
+
+void wifiSaveNetwork(const char* ssid, const char* pass) {
+  if (!ssid || !ssid[0]) return;
+  snprintf(gSavedSsid, sizeof(gSavedSsid), "%.32s", ssid);
+  snprintf(gSavedPass, sizeof(gSavedPass), "%.64s", pass ? pass : "");
+  gCredsLoaded = true;
+  Preferences prefs;
+  if (!prefs.begin("basil", false)) return;
+  prefs.putString("wifiSsid", gSavedSsid);
+  prefs.putString("wifiPass", gSavedPass);
+  prefs.end();
+  Serial.printf("WiFi: saved network '%s'\n", gSavedSsid);
+}
+
+void wifiClearSavedNetwork() {
+  gSavedSsid[0] = 0;
+  gSavedPass[0] = 0;
+  gCredsLoaded = true;
+  Preferences prefs;
+  if (!prefs.begin("basil", false)) return;
+  prefs.remove("wifiSsid");
+  prefs.remove("wifiPass");
+  prefs.end();
+}
+
+bool wifiStartSoftAp() {
+  wifiStop();
+  WiFi.mode(WIFI_AP);
+  delay(50);
+  const bool ok = WiFi.softAP(kApSsid, nullptr, kApChannel, false, 4);
+  if (!ok) {
+    Serial.println("WiFi: SoftAP failed");
+    WiFi.mode(WIFI_OFF);
+    gMode = WifiMode::Off;
+    return false;
+  }
+  delay(80);
+  gMode = WifiMode::SoftAp;
+
+  gDns = new DNSServer();
+  if (gDns) {
+    gDns->start(53, "*", WiFi.softAPIP());
+  }
+
+  Serial.printf("WiFi: SoftAP '%s' ip=%s\n", kApSsid, WiFi.softAPIP().toString().c_str());
+  return true;
+}
+
+bool wifiStartStation(uint32_t timeoutMs) {
+  loadCreds();
+  if (!gSavedSsid[0]) return false;
+  wifiStop();
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.begin(gSavedSsid, gSavedPass[0] ? gSavedPass : nullptr);
+  const uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs) {
+    delay(100);
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.printf("WiFi: STA failed for '%s'\n", gSavedSsid);
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    gMode = WifiMode::Off;
+    return false;
+  }
+  gMode = WifiMode::Station;
+  Serial.printf("WiFi: STA '%s' ip=%s\n", gSavedSsid, WiFi.localIP().toString().c_str());
+  return true;
+}
+
+void wifiStop() {
+  stopDns();
+  if (gMode == WifiMode::SoftAp) {
+    WiFi.softAPdisconnect(true);
+  } else if (gMode == WifiMode::Station) {
+    WiFi.disconnect(true);
+  }
+  WiFi.mode(WIFI_OFF);
+  gMode = WifiMode::Off;
+}
+
+bool wifiIsActive() {
+  return gMode != WifiMode::Off;
+}
+
+WifiMode wifiCurrentMode() {
+  return gMode;
+}
+
+WifiStatus wifiGetStatus() {
+  WifiStatus st;
+  st.mode = gMode;
+  if (gMode == WifiMode::SoftAp) {
+    st.connected = true;
+    snprintf(st.ssid, sizeof(st.ssid), "%s", kApSsid);
+    fillIp(st.ip, sizeof(st.ip), WiFi.softAPIP());
+    snprintf(st.url, sizeof(st.url), "http://%s/", st.ip);
+    snprintf(st.detail, sizeof(st.detail), "Open network — join from phone");
+  } else if (gMode == WifiMode::Station) {
+    st.connected = WiFi.status() == WL_CONNECTED;
+    snprintf(st.ssid, sizeof(st.ssid), "%s", WiFi.SSID().c_str());
+    if (st.connected) {
+      fillIp(st.ip, sizeof(st.ip), WiFi.localIP());
+      snprintf(st.url, sizeof(st.url), "http://%s/", st.ip);
+      st.rssi = WiFi.RSSI();
+      snprintf(st.detail, sizeof(st.detail), "RSSI %d dBm", st.rssi);
+    } else {
+      snprintf(st.detail, sizeof(st.detail), "Disconnected");
+    }
+  } else {
+    snprintf(st.detail, sizeof(st.detail), "Wi‑Fi off");
+  }
+  return st;
+}
+
+void wifiPoll() {
+  if (gDns) gDns->processNextRequest();
+}
+
+bool wifiSyncClock(uint32_t timeoutMs) {
+  if (gMode != WifiMode::Station || WiFi.status() != WL_CONNECTED) return false;
+
+  // UTC; RTC is wall-clock without TZ until we add a setting.
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  const uint32_t start = millis();
+  time_t now = 0;
+  while ((millis() - start) < timeoutMs) {
+    now = time(nullptr);
+    if (now > 1700000000) break;  // past 2023
+    delay(100);
+  }
+  if (now < 1700000000) {
+    Serial.println("WiFi: NTP failed");
+    return false;
+  }
+  struct tm tm;
+  gmtime_r(&now, &tm);
+  const bool ok =
+      boardSetClock(static_cast<uint16_t>(tm.tm_year + 1900), static_cast<uint8_t>(tm.tm_mon + 1),
+                    static_cast<uint8_t>(tm.tm_mday), static_cast<uint8_t>(tm.tm_hour),
+                    static_cast<uint8_t>(tm.tm_min));
+  Serial.printf("WiFi: NTP %s → %04d-%02d-%02d %02d:%02d UTC\n", ok ? "ok" : "rtc fail",
+                tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
+  return ok;
+}
