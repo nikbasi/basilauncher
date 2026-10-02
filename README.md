@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-ESP32--S3-blue.svg)](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/)
 [![Board](https://img.shields.io/badge/board-LilyGO%20T5%20E--Paper%20S3%20Pro-black.svg)](https://github.com/Xinyuan-LilyGO/T5-e-paper-s3)
-[![Version](https://img.shields.io/badge/version-1.4.23-green.svg)](platformio.ini)
+[![Version](https://img.shields.io/badge/version-1.4.24-green.svg)](platformio.ini)
 
 Basilauncher is a **factory-partition launcher**: it boots first after reset, lets you
 install guest firmwares from the SD card into flash slots, and comes back when you
@@ -15,7 +15,7 @@ If Basilauncher is useful on your T5 Pro, a GitHub star helps others find it.
 
 ## Download
 
-Pre-built images: **[Releases](https://github.com/nikbasi/basilauncher/releases)** (latest: [v1.4.23](https://github.com/nikbasi/basilauncher/releases/tag/v1.4.23)).
+Pre-built images: **[Releases](https://github.com/nikbasi/basilauncher/releases)** (latest: [v1.4.24](https://github.com/nikbasi/basilauncher/releases/tag/v1.4.24)).
 
 **Easiest install:** open the **[web flasher](https://nikbasi.github.io/basilauncher/flash/)** (Chrome/Edge), plug in the T5 Pro, click **Connect & flash**.
 
@@ -29,7 +29,7 @@ Pre-built images: **[Releases](https://github.com/nikbasi/basilauncher/releases)
 **First install via esptool (one file):**
 
 ```bash
-esptool.py --chip esp32s3 -p PORT write-flash 0x0 basilauncher-1.4.23-full.bin
+esptool.py --chip esp32s3 -p PORT write-flash 0x0 basilauncher-1.4.24-full.bin
 ```
 
 Full recipes: **[docs/flashing.md](docs/flashing.md)** · **[Web flasher](https://nikbasi.github.io/basilauncher/flash/)**.
