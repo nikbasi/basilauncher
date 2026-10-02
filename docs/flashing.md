@@ -28,10 +28,6 @@ From [Releases](https://github.com/nikbasi/basilauncher/releases), download
 PORT=/dev/cu.usbmodem101   # Windows: COMx
 
 esptool.py --chip esp32s3 -p "$PORT" write-flash 0x0 basilauncher-1.4.23-full.bin
-
-# Clears the OTA boot pointer (factory vs guest). Recommended after any
-# three-file flash; optional after full.bin (already 0xFF in that region):
-esptool.py --chip esp32s3 -p "$PORT" erase-region 0xe000 0x2000
 ```
 
 Rebuild a full image after `pio run`:
@@ -41,42 +37,19 @@ Rebuild a full image after `pio run`:
 # → .pio/build/basilauncher/basilauncher-<ver>-full.bin
 ```
 
-This overwrites the bootloader and partition table. Guest slots beyond the
-end of the full image (~640 KB) are not rewritten.
+This overwrites the bootloader and partition table. Otadata (`0xe000`) is already
+`0xFF` inside the merged image, so the board boots Basilauncher. Guest slots
+beyond the end of the full image (~640 KB) are not rewritten.
 
 ## What “erase otadata” means
 
-Otadata at **`0xe000`** (8 KB) stores which OTA slot to boot. If it still points
-at a guest, reset won’t return to Basilauncher until you clear it:
+Otadata at **`0xe000`** (8 KB) stores which OTA slot to boot. Everyday hub upload
+(`pio run -e basilauncher -t upload`) clears it automatically after writing
+factory. Double-press **RST** also returns to the hub. Manual clear if needed:
 
 ```bash
 esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000
 ```
-
-PlatformIO hub upload (`pio run -e basilauncher -t upload`) does this automatically
-after writing factory.
-
-## First install / partition map change (three files)
-
-When you prefer separate binaries (or changed [`partitions.csv`](../partitions.csv)
-and want an explicit table rewrite):
-
-```bash
-pio run -e basilauncher   # produce .pio/build/basilauncher/*
-
-PORT=/dev/cu.usbmodem101   # Windows: COMx
-
-python3 -m esptool --chip esp32s3 -p "$PORT" write-flash \
-  0x0     bootloader/basil-bootloader.bin \
-  0x8000  .pio/build/basilauncher/partitions.bin \
-  0x10000 .pio/build/basilauncher/firmware.bin
-
-python3 -m esptool --chip esp32s3 -p "$PORT" erase-region 0xe000 0x2000
-```
-
-Use the **custom** [`bootloader/basil-bootloader.bin`](../bootloader/basil-bootloader.bin)
-(RST double-press). Arduino’s stock `boot_app0` / default bootloader will not
-implement the return-to-hub gesture.
 
 ## Custom bootloader only
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build a single flashable image: custom bootloader + partitions + factory app.
+# Gaps (including otadata @ 0xe000) are padded with 0xFF by merge-bin.
 # Flash with:  esptool.py --chip esp32s3 -p PORT write-flash 0x0 <this-file>
-# Then:        esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$ROOT/.pio/build/basilauncher"
@@ -33,4 +33,3 @@ if [[ -d "$ROOT/docs/flash" ]]; then
 fi
 ls -la "$OUT" "$OUT_DIR/basilauncher-full.bin"
 echo "Flash: esptool.py --chip esp32s3 -p PORT write-flash 0x0 $OUT"
-echo "Then:  esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000"

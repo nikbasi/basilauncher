@@ -116,7 +116,7 @@
 
     <div class="card">
       <h2>Install</h2>
-      <p>Writes bootloader, partition table, cleared otadata, and factory hub (same layout as a USB first install).</p>
+      <p>Writes one full image at <code>0x0</code> (bootloader, partitions, hub). First install only.</p>
       <p id="preload-status" data-state="loading">Loading firmware…</p>
       <div class="flash-row">
         <esp-web-install-button id="install-btn" data-ready="0">
@@ -126,15 +126,13 @@
         </esp-web-install-button>
         <button type="button" class="retry" id="retry-btn" hidden>Retry download</button>
       </div>
-      <p class="hint">Pick the port labeled like <code>USB JTAG/serial</code> or <code>Espressif</code>. First install only — for later hub updates prefer the smaller factory image via USB tools so guest apps stay intact.</p>
+      <p class="hint">Pick the port labeled like <code>USB JTAG/serial</code> or <code>Espressif</code>. For later hub updates use the smaller factory image so guest apps stay intact.</p>
     </div>
 
     <div class="card">
       <h2>Manual (esptool)</h2>
-      <p>Same result as the button:</p>
-      <pre style="white-space:pre-wrap;font-size:0.85rem;background:#efeae0;padding:0.85rem;border-radius:8px;overflow:auto"><code>esptool.py --chip esp32s3 -p PORT write-flash 0x0 basilauncher-*-full.bin
-esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000</code></pre>
-      <p class="hint">The erase step is optional if you flashed the full image (it already contains erased otadata), but harmless and recommended after a three-file flash.</p>
+      <p>Same one-file result:</p>
+      <pre style="white-space:pre-wrap;font-size:0.85rem;background:#efeae0;padding:0.85rem;border-radius:8px;overflow:auto"><code>esptool.py --chip esp32s3 -p PORT write-flash 0x0 basilauncher-*-full.bin</code></pre>
     </div>
 
     <footer>
@@ -147,16 +145,13 @@ esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000</code></pre>
   </main>
 
   <script type="module">
-    // Same-origin parts. Preload into blob: URLs so esp-web-tools never
-    // re-fetches over the network (avoids Pages gzip / CDN / CORS traps).
+    // Preload the single full image into a blob: URL so esp-web-tools does not
+    // re-fetch over the network (Pages gzip / CDN traps).
     const PARTS = [
-      { file: "basil-bootloader.bin", offset: 0, expect: 20624 },
-      { file: "partitions.bin", offset: 32768, expect: 3072 },
-      { file: "otadata-erased.bin", offset: 57344, expect: 8192 },
-      { file: "firmware-factory.bin", offset: 65536, expect: 587904 },
+      { file: "basilauncher-full.bin", offset: 0, expect: 653440 },
     ];
     const VERSION = "1.4.23";
-    const CACHE_BUST = "20261001c";
+    const CACHE_BUST = "20261002a";
 
     const statusEl = document.getElementById("preload-status");
     const btn = document.getElementById("install-btn");
@@ -198,15 +193,13 @@ esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000</code></pre>
       }
 
       const parts = [];
-      let loaded = 0;
       for (const part of PARTS) {
-        setStatus("loading", `Loading ${part.file} (${loaded + 1}/${PARTS.length})…`);
+        setStatus("loading", `Loading ${part.file}…`);
         const buf = await fetchPart(part);
         const blob = new Blob([buf], { type: "application/octet-stream" });
         const blobUrl = URL.createObjectURL(blob);
         blobUrls.push(blobUrl);
         parts.push({ path: blobUrl, offset: part.offset });
-        loaded += 1;
       }
 
       const manifest = {
@@ -221,7 +214,8 @@ esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000</code></pre>
       blobUrls.push(manifestUrl);
       btn.manifest = manifestUrl;
       btn.dataset.ready = "1";
-      setStatus("ready", `Firmware ready (${VERSION}, ${(PARTS.reduce((a, p) => a + p.expect, 0) / 1024).toFixed(0)} KB).`);
+      const kb = (PARTS.reduce((a, p) => a + p.expect, 0) / 1024).toFixed(0);
+      setStatus("ready", `Firmware ready (${VERSION}, ${kb} KB).`);
     }
 
     retryBtn.addEventListener("click", () => {

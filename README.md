@@ -30,11 +30,7 @@ Pre-built images: **[Releases](https://github.com/nikbasi/basilauncher/releases)
 
 ```bash
 esptool.py --chip esp32s3 -p PORT write-flash 0x0 basilauncher-1.4.23-full.bin
-# Optional but fine — full image already contains erased otadata (0xFF @ 0xe000):
-esptool.py --chip esp32s3 -p PORT erase-region 0xe000 0x2000
 ```
-
-`erase-region 0xe000 0x2000` clears the OTA boot pointer so the device starts Basilauncher (factory) instead of a leftover guest.
 
 Full recipes: **[docs/flashing.md](docs/flashing.md)** · **[Web flasher](https://nikbasi.github.io/basilauncher/flash/)**.
 
