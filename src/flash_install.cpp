@@ -121,11 +121,6 @@ const char* flashResultName(FlashResult r) {
   return "unknown";
 }
 
-size_t flashSlotCapacity(int slotIndex) {
-  const esp_partition_t* dest = slotPartition(slotIndex);
-  return dest ? dest->size : 0;
-}
-
 FlashResult flashValidateAndWrite(const char* sdPath, int slotIndex, FlashProgressCb cb, void* ctx) {
   const esp_partition_t* dest = slotPartition(slotIndex);
   if (!dest) return FlashResult::NoPartition;

@@ -60,8 +60,16 @@ python3 -m esptool --chip esp32s3 -p "$PORT" write-flash \
   0x0 bootloader/basil-bootloader.bin
 ```
 
-Rebuild notes live in the bootloader folder README section of the main README
-(`cd bootloader && pio run`, then `ninja` / `elf2image` as documented there).
+Rebuild the committed `bootloader/basil-bootloader.bin`:
+
+```bash
+cd bootloader
+pio run
+# Copy the IDF second-stage image into the repo:
+cp .pio/build/bootloader/bootloader.bin basil-bootloader.bin
+# Or flash it directly: pio run -t flashbl
+```
+
 The image must stay under **28 KB** so the flag sector at `0x7000` remains free.
 
 ## Do not
@@ -76,4 +84,11 @@ The image must stay under **28 KB** so the flag sector at `0x7000` remains free.
 
 ```bash
 pio device monitor -e basilauncher
+```
+
+Push `.bin` files to the SD card over USB (device must be running Basilauncher):
+
+```bash
+python3 scripts/sd_push.py --dir /path/to/bins
+# or: python3 scripts/sd_push.py path/to/app.bin …
 ```

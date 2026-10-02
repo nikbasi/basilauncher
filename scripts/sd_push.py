@@ -163,7 +163,7 @@ def ls(ser: serial.Serial, path: str) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--port", default=None)
-    ap.add_argument("--dir", default="/Users/domenico/Code/lilygo-sd-pack/firmware")
+    ap.add_argument("--dir", default=".", help="Local folder of .bin files when no paths given")
     ap.add_argument("--remote-dir", default="/firmware")
     ap.add_argument("--ls", action="store_true")
     ap.add_argument("files", nargs="*", help="Specific .bin files (default: all in --dir)")

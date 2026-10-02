@@ -262,13 +262,7 @@ void boardSetFrontlightOn(bool on) {
   persistLight();
 }
 
-int boardBatteryPercent() {
-  const BoardPowerInfo p = boardPower();
-  return p.known ? p.percent : -1;
-}
-
 bool boardSdOk() { return gSdOk; }
-bool boardTouchOk() { return gTouchOk; }
 
 void boardInputUpdate() {
   // Async task owns update(); main thread only drains queues.
@@ -329,8 +323,4 @@ bool boardTouchHeld(int& x, int& y) {
   if (!gInput.isTouchHeldAt(nx, ny)) return false;
   canvasTouchToLogical(nx, ny, x, y);
   return true;
-}
-
-void boardSuppressTouch() {
-  if (gTouchOk) gInput.suppressTouchContact();
 }

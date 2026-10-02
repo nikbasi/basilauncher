@@ -1,6 +1,4 @@
 #include <Arduino.h>
-#include <esp_sleep.h>
-#include <esp_system.h>
 #include <algorithm>
 #include <cstring>
 #include <vector>

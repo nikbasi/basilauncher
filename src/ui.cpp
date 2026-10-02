@@ -1261,14 +1261,6 @@ void uiDrawImageViewHint() {
   canvasPresent(EInkDisplay::HALF_REFRESH);
 }
 
-UiHit uiHitImageView(int x, int y) {
-  (void)x;
-  (void)y;
-  UiHit hit;
-  hit.kind = UiHit::Kind::ImageBack;
-  return hit;
-}
-
 namespace {
 
 // Phone-style QWERTY: 3 letter rows + bottom bar. Fat keys, small side margins.

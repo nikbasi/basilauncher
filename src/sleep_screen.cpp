@@ -136,7 +136,7 @@ void enterSleepWithScreensaver(bool quiet) {
   if (!pickAndDrawRandom()) {
     canvasClear();
   }
-  drawSleepBanner("Press BOOT to wake", /*top=*/false, /*scale=*/1);
+  drawSleepBanner("Hold BOOT to wake", /*top=*/false, /*scale=*/1);
   canvasPresent(EInkDisplay::FULL_REFRESH);
   delay(200);
 
@@ -146,17 +146,29 @@ void enterSleepWithScreensaver(bool quiet) {
   esp_deep_sleep_start();
 }
 
-void sleepRequireBootHoldToWake(uint32_t /*needMs*/) {
+void sleepRequireBootHoldToWake(uint32_t needMs) {
   if (!wokeFromBootButton()) return;
 
-  // Any real BOOT press wakes and stays up. A tiny debounce filters USB/JTAG
-  // glitches that can pulse GPIO0 without a finger on the button.
+  // Debounce USB/JTAG glitches that pulse GPIO0 without a finger on the button.
   delay(40);
   if (!bootPinPressed()) {
     Serial.println("Wake: BOOT glitch — sleeping again");
     enterSleepWithScreensaver(/*quiet=*/true);
     return;
   }
-  Serial.println("Wake: BOOT — staying awake");
-  waitBootReleased();
+
+  // Hold to stay awake; short press cycles to another sleep image.
+  if (needMs < 40) needMs = 40;
+  const uint32_t start = millis();
+  while (bootPinPressed()) {
+    if ((millis() - start) >= needMs) {
+      Serial.println("Wake: BOOT hold — staying awake");
+      waitBootReleased();
+      return;
+    }
+    delay(10);
+  }
+
+  Serial.println("Wake: BOOT tap — next sleep image");
+  enterSleepWithScreensaver(/*quiet=*/true);
 }

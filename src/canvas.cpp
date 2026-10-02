@@ -128,8 +128,6 @@ void canvasPresentAuto() {
 
 void canvasSetHoldCleanRefresh(bool hold) { gHoldCleanRefresh = hold; }
 
-bool canvasHoldCleanRefresh() { return gHoldCleanRefresh; }
-
 void canvasNuclearFlash() {
   gHoldCleanRefresh = false;
   // Drive every pixel off white through the fast bank, then scrub toward white.

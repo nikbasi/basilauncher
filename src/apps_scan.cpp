@@ -156,36 +156,6 @@ int appsBestFitSlot(size_t bytes) {
   return best;
 }
 
-int appsFittingEmptySlots(size_t bytes, int* outIndices, int maxOut) {
-  int n = 0;
-  for (int i = 0; i < kSlotCount && n < maxOut; ++i) {
-    const SlotInfo s = appsSlotInfo(i);
-    if (s.occupied) continue;
-    if (s.capacity < bytes) continue;
-    if (outIndices) outIndices[n] = i;
-    n++;
-  }
-  return n;
-}
-
-std::vector<FirmwareFile> appsScanFirmwareDir() {
-  std::vector<FirmwareFile> out;
-  const auto entries = appsScanDir("/firmware");
-  out.reserve(entries.size());
-  for (const auto& e : entries) {
-    if (e.isDir) continue;
-    String lower = e.name.c_str();
-    lower.toLowerCase();
-    if (!lower.endsWith(".bin")) continue;
-    FirmwareFile f;
-    f.name = e.name;
-    f.path = e.path;
-    f.size = e.size;
-    out.push_back(std::move(f));
-  }
-  return out;
-}
-
 bool appsIsRootDir(const char* path) {
   return path && (path[0] == '/' && path[1] == 0);
 }

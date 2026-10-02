@@ -75,7 +75,6 @@ struct UiHit {
     KeyCancel,
     ConfirmYes,
     ConfirmNo,
-    ImageBack,
   };
   Kind kind = Kind::None;
   int index = -1;
@@ -122,7 +121,6 @@ UiHit uiHitSettings(int x, int y);
 UiHit uiHitShade(int x, int y);
 UiHit uiHitConfirm(int x, int y);
 UiHit uiHitTextEdit(int x, int y, bool symbols, bool shift);
-UiHit uiHitImageView(int x, int y);
 
 // Brightness track geometry for live drag.
 void uiShadeBrightnessTrack(int& x, int& y, int& w, int& h);

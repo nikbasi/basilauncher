@@ -16,12 +16,6 @@ struct DirEntry {
   bool isDir = false;
 };
 
-struct FirmwareFile {
-  std::string name;
-  std::string path;
-  size_t size = 0;
-};
-
 struct SlotInfo {
   int index = 0;
   char label[2] = {'A', 0};  // A..D
@@ -48,8 +42,6 @@ FlashSpace appsFlashSpace();
 
 // Smallest empty slot that can hold `bytes`, or -1.
 int appsBestFitSlot(size_t bytes);
-// How many empty slots can hold `bytes`.
-int appsFittingEmptySlots(size_t bytes, int* outIndices, int maxOut);
 
 // List directories + files in `dirPath` (absolute, e.g. "/" or "/firmware").
 // Directories first (A-Z), then files (A-Z). Skips "." / ".." and junk.
@@ -57,7 +49,5 @@ std::vector<DirEntry> appsScanDir(const char* dirPath);
 // Parent of absolute path, or "/" for root. Never empty.
 void appsParentDir(const char* path, char* out, size_t outLen);
 bool appsIsRootDir(const char* path);
-
-std::vector<FirmwareFile> appsScanFirmwareDir();  // legacy: /firmware *.bin only
 
 void appsFormatBytes(size_t bytes, char* buf, size_t bufLen);

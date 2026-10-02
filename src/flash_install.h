@@ -24,4 +24,3 @@ FlashResult flashValidateAndWrite(const char* sdPath, int slotIndex, FlashProgre
 FlashResult flashEraseSlot(int slotIndex);
 FlashResult bootSlotPendingVerify(int slotIndex);
 const char* flashResultName(FlashResult r);
-size_t flashSlotCapacity(int slotIndex);

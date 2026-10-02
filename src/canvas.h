@@ -20,7 +20,6 @@ void canvasPresentAuto();
 // While held, canvasPresentAuto never promotes to HALF — for text entry where
 // a mid-type scrub is worse than temporary ghosting (scrub on exit instead).
 void canvasSetHoldCleanRefresh(bool hold);
-bool canvasHoldCleanRefresh();
 void canvasRequestCleanRefresh();
 void canvasSetCleanEvery(int n);  // 1..30 frames between clean scrubs
 int canvasCleanEvery();

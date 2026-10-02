@@ -53,9 +53,7 @@ void boardSetBrightness(int percent);  // also turns on if >0
 void boardSetFrontlightOn(bool on);
 bool boardHasFrontlight();
 
-int boardBatteryPercent();
 bool boardSdOk();
-bool boardTouchOk();
 
 // Call once per loop before poll helpers.
 void boardInputUpdate();
@@ -64,7 +62,6 @@ bool boardPollTouch(int& x, int& y);
 // Swipe in portrait logical coords (check before tap).
 bool boardPollSwipe(int& x0, int& y0, int& x1, int& y1);
 bool boardTouchHeld(int& x, int& y);
-void boardSuppressTouch();
 
 // BOOT / power key (GPIO0 on LilyGO T5 S3 Pro) — power / BOOT key on this board.
 bool boardPowerPressed();
