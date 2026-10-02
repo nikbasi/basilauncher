@@ -1,7 +1,7 @@
 #include "sleep_screen.h"
 
 #include "board_hal.h"
-#include "bmp_draw.h"
+#include "image_draw.h"
 #include "canvas.h"
 
 #include <BoardConfig.h>
@@ -17,13 +17,8 @@ namespace {
 constexpr int kMaxSleepFiles = 64;
 constexpr size_t kMaxNameLen = 48;
 
-bool isBmpName(const char* name) {
-  if (!name) return false;
-  const size_t n = strlen(name);
-  if (n < 5) return false;
-  const char* ext = name + n - 4;
-  return (ext[0] == '.' && (ext[1] == 'b' || ext[1] == 'B') && (ext[2] == 'm' || ext[2] == 'M') &&
-          (ext[3] == 'p' || ext[3] == 'P'));
+bool isSleepImageName(const char* name) {
+  return imageIsSupportedName(name);
 }
 
 int collectSleepFiles(char names[][kMaxNameLen], const char* dirPath) {
@@ -37,7 +32,7 @@ int collectSleepFiles(char names[][kMaxNameLen], const char* dirPath) {
     const char* base = strrchr(name, '/');
     base = base ? base + 1 : name;
     if (base[0] == '.' || base[0] == '_') continue;
-    if (!isBmpName(base)) continue;
+    if (!isSleepImageName(base)) continue;
     snprintf(names[count], kMaxNameLen, "%s", base);
     ++count;
   }
@@ -118,7 +113,7 @@ bool abortSleepForBootHold(uint32_t needMs = 600) {
   return false;
 }
 
-// For bmpDrawFile: if BOOT is down, block briefly to see if it becomes a wake hold.
+// For imageDrawFile: if BOOT is down, block briefly to see if it becomes a wake hold.
 bool abortCheckBootHold() {
   return abortSleepForBootHold(600);
 }
@@ -135,7 +130,7 @@ bool pickAndDrawRandom() {
     char path[96];
     snprintf(path, sizeof(path), "%s/%s", dir, names[pick]);
     Serial.printf("Sleep image: %s\n", path);
-    if (bmpDrawFile(path, abortCheckBootHold)) return true;
+    if (imageDrawFile(path, abortCheckBootHold)) return true;
     if (gSleepAbortWake) return false;
   }
   return false;

@@ -24,6 +24,8 @@ bool fileOpsBasename(const char* path, char* out, size_t outLen);
 bool fileOpsEndsWith(const char* name, const char* ext);  // case-insensitive ext
 bool fileOpsIsBin(const char* name);
 bool fileOpsIsBmp(const char* name);
+bool fileOpsIsJpeg(const char* name);
+bool fileOpsIsImage(const char* name);
 bool fileOpsIsText(const char* name);
 
 bool fileOpsExists(const char* path);

@@ -5,10 +5,10 @@
 
 #include "apps_scan.h"
 #include "board_hal.h"
-#include "bmp_draw.h"
 #include "canvas.h"
 #include "file_ops.h"
 #include "flash_install.h"
+#include "image_draw.h"
 #include "sd_serial.h"
 #include "sleep_screen.h"
 #include "ui.h"
@@ -16,6 +16,7 @@
 #include "wifi_session.h"
 
 #include <SD.h>
+#include <esp_task_wdt.h>
 
 namespace {
 
@@ -291,9 +292,10 @@ void installSelectedBin() {
 }
 
 void openImage(const char* path) {
+  uiDrawProgress("Opening image...", 30);
   gScreen = Screen::ImageView;
-  if (!bmpDrawFile(path)) {
-    showMessage("Image", "Could not open BMP (need 24-bit).", true);
+  if (!imageDrawFile(path)) {
+    showMessage("Image", "Could not open image.", true);
     return;
   }
   uiDrawImageViewHint();
@@ -457,7 +459,7 @@ void openSelected() {
     installSelectedBin();
     return;
   }
-  if (fileOpsIsBmp(e.name.c_str())) {
+  if (fileOpsIsImage(e.name.c_str())) {
     openImage(e.path.c_str());
     return;
   }
@@ -587,9 +589,7 @@ void redrawWifi() {
   gScreen = Screen::Wifi;
   const WifiStatus st = wifiGetStatus();
   const bool active = wifiIsActive();
-  const bool station = st.mode == WifiMode::Station;
-  const char* status =
-      !active ? "Off" : (station ? "Joined network" : "Hotspot on");
+  const char* status = !active ? "Off" : "Hotspot on";
   char detail[96];
   detail[0] = 0;
   const char* msg = wifiServerLastMessage();
@@ -598,7 +598,7 @@ void redrawWifi() {
   } else if (st.detail[0]) {
     snprintf(detail, sizeof(detail), "%s", st.detail);
   }
-  uiDrawWifi(gSpace, status, st.ssid, st.url, detail, wifiHasSavedNetwork(), active, station);
+  uiDrawWifi(gSpace, status, st.ssid, st.url, detail, active);
 }
 
 void stopWifiSession() {
@@ -610,22 +610,7 @@ void startWifiHotspot() {
   uiDrawProgress("Starting hotspot...", 10);
   if (!wifiStartSoftAp() || !wifiServerStart()) {
     stopWifiSession();
-    showMessage("Wi‑Fi failed", "Could not start the hotspot.", false);
-    return;
-  }
-  wifiServerClearMessage();
-  redrawWifi();
-}
-
-void startWifiStation() {
-  char ssid[33];
-  wifiGetSavedSsid(ssid, sizeof(ssid));
-  char title[48];
-  snprintf(title, sizeof(title), "Joining %s...", ssid[0] ? ssid : "Wi‑Fi");
-  uiDrawProgress(title, 10);
-  if (!wifiStartStation(20000) || !wifiServerStart()) {
-    stopWifiSession();
-    showMessage("Wi‑Fi failed", "Could not join the saved network.", false);
+    showMessage("Wi-Fi failed", "Could not start the hotspot.", false);
     return;
   }
   wifiServerClearMessage();
@@ -786,10 +771,16 @@ void handleExplorerHit(const UiHit& hit) {
       }
       break;
     case UiHit::Kind::SelectEntry:
-      if (gMultiSelect) toggleExplorerEntry(hit.index);
-      else selectOnlyExplorerEntry(hit.index);
-      gSheetOpen = false;
-      redrawExplorer(true);
+      if (gMultiSelect) {
+        toggleExplorerEntry(hit.index);
+        gSheetOpen = false;
+        redrawExplorer(true);
+      } else {
+        // Single tap opens (dir / image / text / install). Long-press for multi-select.
+        selectOnlyExplorerEntry(hit.index);
+        gSheetOpen = false;
+        openSelected();
+      }
       break;
     case UiHit::Kind::ExplorerOpen:
       if (gSelectedEntries.size() == 1) openSelected();
@@ -934,6 +925,8 @@ void handleTouch(int x, int y) {
   }
 
   if (gScreen == Screen::ImageView) {
+    esp_task_wdt_reset();
+    canvasCancelPendingClean();
     redrawExplorer();
     return;
   }
@@ -1080,10 +1073,8 @@ void handleTouch(int x, int y) {
   }
 
   if (gScreen == Screen::Wifi) {
-    const WifiStatus st = wifiGetStatus();
     const bool active = wifiIsActive();
-    const bool station = st.mode == WifiMode::Station;
-    const UiHit hit = uiHitWifi(x, y, wifiHasSavedNetwork(), active, station);
+    const UiHit hit = uiHitWifi(x, y, active);
     if (hit.kind == UiHit::Kind::Back) {
       stopWifiSession();
       gScreen = Screen::Settings;
@@ -1092,22 +1083,8 @@ void handleTouch(int x, int y) {
       showShade();
     } else if (hit.kind == UiHit::Kind::WifiStartAp) {
       startWifiHotspot();
-    } else if (hit.kind == UiHit::Kind::WifiJoinSaved) {
-      startWifiStation();
     } else if (hit.kind == UiHit::Kind::WifiStop) {
       stopWifiSession();
-      redrawWifi();
-    } else if (hit.kind == UiHit::Kind::WifiSyncClock) {
-      uiDrawProgress("Syncing clock...", 20);
-      if (wifiSyncClock()) {
-        wifiServerClearMessage();
-      } else {
-        // Surface failure on the Wi‑Fi screen detail line.
-        // Reuse last-message buffer via a static note in status redraw.
-      }
-      redrawWifi();
-    } else if (hit.kind == UiHit::Kind::WifiForget) {
-      wifiClearSavedNetwork();
       redrawWifi();
     }
     return;

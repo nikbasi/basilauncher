@@ -1,7 +1,5 @@
 #include "wifi_server.h"
 
-#include "wifi_session.h"
-
 #include <SD.h>
 #include <WebServer.h>
 #include <cstring>
@@ -11,9 +9,9 @@ namespace {
 WebServer* gServer = nullptr;
 File gUpload;
 char gUploadPath[192] = {};
+char gUploadDir[160] = "/";
 char gLastMsg[96] = {};
 bool gUploadOk = false;
-const char* gUploadDir = "/firmware";
 
 constexpr char kIndexHtml[] = R"HTML(<!DOCTYPE html>
 <html lang="en">
@@ -26,41 +24,192 @@ body{font-family:system-ui,sans-serif;max-width:28rem;margin:1.5rem auto;padding
 h1{font-size:1.25rem;margin:0 0 .5rem}
 .card{border:1px solid #ccc;border-radius:10px;padding:1rem;margin:1rem 0}
 label{display:block;margin:.5rem 0 .2rem;font-size:.9rem}
-input,select,button{font:inherit;padding:.45rem .6rem;width:100%;box-sizing:border-box}
-button{margin-top:.75rem;background:#2c5f4a;color:#fff;border:0;border-radius:8px}
+input,button{font:inherit;padding:.45rem .6rem;width:100%;box-sizing:border-box}
+button{margin-top:.6rem;background:#2c5f4a;color:#fff;border:0;border-radius:8px}
+button.secondary{background:#eee;color:#222;margin-top:.35rem}
 .muted{color:#666;font-size:.9rem}
+.row{display:flex;gap:.4rem;align-items:center}
+.row input{flex:1}
+.list{border:1px solid #ddd;border-radius:8px;max-height:14rem;overflow:auto;margin:.5rem 0}
+.list button{display:block;width:100%;text-align:left;background:#fff;color:#222;border:0;border-bottom:1px solid #eee;border-radius:0;margin:0;padding:.55rem .7rem}
+.list button:last-child{border-bottom:0}
+.list .file{color:#666}
+#status{margin-top:.75rem;min-height:1.2em}
 </style>
 </head>
 <body>
-<h1>Basilauncher</h1>
-<p class="muted">Upload firmware bins or sleep images to the SD card.</p>
+<h1>Basilauncher transfer</h1>
+<p class="muted">Pick any folder on the SD card, then upload one or more files.</p>
 <div class="card">
-<form id="up" method="POST" action="/upload/firmware" enctype="multipart/form-data">
-<label>Destination</label>
-<select id="dest" onchange="document.getElementById('up').action='/upload/'+this.value">
-<option value="firmware">/firmware (apps)</option>
-<option value="sleep">/sleep (screensaver BMPs)</option>
-</select>
-<label>File</label>
-<input type="file" name="file" required/>
-<button type="submit">Upload</button>
-</form>
+<label>Folder</label>
+<div class="row">
+<input id="dir" value="/" maxlength="120" spellcheck="false"/>
+<button type="button" class="secondary" id="up" style="width:auto;white-space:nowrap">Up</button>
 </div>
-<div class="card">
-<form method="POST" action="/wifi">
-<label>Home Wi‑Fi SSID (optional)</label>
-<input name="ssid" maxlength="32" placeholder="MyNetwork"/>
-<label>Password</label>
-<input name="pass" type="password" maxlength="64" placeholder="••••••••"/>
-<button type="submit">Save network</button>
+<div class="list" id="list"><div class="muted" style="padding:.6rem">Loading...</div></div>
+<form id="form">
+<label>Files</label>
+<input id="file" type="file" multiple required/>
+<button type="submit">Upload here</button>
 </form>
-<p class="muted">Saved credentials let the device join your LAN later for NTP and transfers.</p>
+<p id="status" class="muted"></p>
+<p class="muted">Tips: apps go in <code>/firmware</code>. Sleep wallpapers (<code>.bmp</code>, <code>.jpg</code>) go in <code>/sleep</code>.</p>
 </div>
+<script>
+const dirEl=document.getElementById('dir');
+const listEl=document.getElementById('list');
+const statusEl=document.getElementById('status');
+function norm(p){
+  p=(p||'/').trim()||'/';
+  if(!p.startsWith('/'))p='/'+p;
+  p=p.replace(/\/+/g,'/');
+  if(p.length>1&&p.endsWith('/'))p=p.slice(0,-1);
+  return p;
+}
+function parentOf(p){
+  p=norm(p);
+  if(p==='/')return '/';
+  const i=p.lastIndexOf('/');
+  return i<=0?'/':p.slice(0,i);
+}
+async function refresh(){
+  const path=norm(dirEl.value);
+  dirEl.value=path;
+  listEl.innerHTML='<div class="muted" style="padding:.6rem">Loading...</div>';
+  try{
+    const r=await fetch('/api/ls?path='+encodeURIComponent(path));
+    const j=await r.json();
+    if(!r.ok)throw new Error(j.error||'List failed');
+    dirEl.value=j.path||path;
+    const bits=[];
+    if(j.path&&j.path!=='/'){
+      bits.push('<button type="button" data-path="'+parentOf(j.path)+'">../</button>');
+    }
+    (j.dirs||[]).forEach(d=>{
+      const full=(j.path==='/'?'/':j.path+'/')+d;
+      bits.push('<button type="button" data-path="'+full+'">'+d+'/</button>');
+    });
+    (j.files||[]).forEach(f=>{
+      bits.push('<button type="button" class="file" disabled>'+f+'</button>');
+    });
+    listEl.innerHTML=bits.length?bits.join(''):'<div class="muted" style="padding:.6rem">Empty folder</div>';
+    listEl.querySelectorAll('button[data-path]').forEach(b=>{
+      b.onclick=()=>{dirEl.value=b.dataset.path;refresh();};
+    });
+  }catch(e){
+    listEl.innerHTML='<div class="muted" style="padding:.6rem">'+(e.message||e)+'</div>';
+  }
+}
+document.getElementById('up').onclick=()=>{dirEl.value=parentOf(dirEl.value);refresh();};
+dirEl.addEventListener('change',refresh);
+dirEl.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();refresh();}});
+document.getElementById('form').onsubmit=async e=>{
+  e.preventDefault();
+  const files=document.getElementById('file').files;
+  if(!files||!files.length)return;
+  const path=norm(dirEl.value);
+  let ok=0,fail=0;
+  const notes=[];
+  for(let i=0;i<files.length;i++){
+    const file=files[i];
+    statusEl.textContent='Uploading '+(i+1)+'/'+files.length+': '+file.name;
+    const fd=new FormData();
+    fd.append('file',file,file.name);
+    try{
+      const r=await fetch('/upload?dir='+encodeURIComponent(path),{method:'POST',body:fd});
+      const t=await r.text();
+      if(r.ok){ok++;notes.push(file.name);}
+      else{fail++;notes.push(file.name+': '+(t||'failed'));}
+    }catch(err){
+      fail++;
+      notes.push(file.name+': '+(err.message||err));
+    }
+  }
+  statusEl.textContent=fail
+    ?('Done: '+ok+' ok, '+fail+' failed. '+notes.filter(n=>n.includes(':')).slice(0,3).join(' | '))
+    :('Saved '+ok+' file'+(ok===1?'':'s'));
+  document.getElementById('file').value='';
+  refresh();
+};
+refresh();
+</script>
 </body>
 </html>)HTML";
 
-void ensureDir(const char* dir) {
-  if (!SD.exists(dir)) SD.mkdir(dir);
+bool isSafePathSegment(const char* s) {
+  if (!s || !s[0]) return false;
+  if (strcmp(s, ".") == 0 || strcmp(s, "..") == 0) return false;
+  for (const char* p = s; *p; ++p) {
+    const char c = *p;
+    if (c == '/' || c == '\\' || c < 0x20) return false;
+  }
+  return true;
+}
+
+// Normalize to absolute path without trailing slash (except root "/").
+// Rejects ".." and empty segments. Returns false on bad input.
+bool normalizeDirPath(const char* in, char* out, size_t outLen) {
+  if (!in || !out || outLen < 2) return false;
+  char tmp[160];
+  size_t n = 0;
+  if (in[0] != '/') {
+    tmp[n++] = '/';
+  }
+  for (size_t i = 0; in[i] && n + 1 < sizeof(tmp); ++i) {
+    char c = in[i];
+    if (c == '\\') c = '/';
+    if (c == '/' && n > 0 && tmp[n - 1] == '/') continue;
+    tmp[n++] = c;
+  }
+  while (n > 1 && tmp[n - 1] == '/') --n;
+  tmp[n] = 0;
+
+  // Walk segments; reject "..".
+  char built[160] = "/";
+  size_t b = 1;
+  const char* p = tmp;
+  if (*p == '/') ++p;
+  while (*p) {
+    const char* slash = strchr(p, '/');
+    char seg[64];
+    size_t slen = slash ? static_cast<size_t>(slash - p) : strlen(p);
+    if (slen == 0 || slen >= sizeof(seg)) return false;
+    memcpy(seg, p, slen);
+    seg[slen] = 0;
+    if (!isSafePathSegment(seg)) return false;
+    if (b > 1) {
+      if (b + 1 >= sizeof(built)) return false;
+      built[b++] = '/';
+    }
+    if (b + slen >= sizeof(built)) return false;
+    memcpy(built + b, seg, slen);
+    b += slen;
+    built[b] = 0;
+    if (!slash) break;
+    p = slash + 1;
+  }
+  if (b == 1) {
+    snprintf(out, outLen, "/");
+  } else {
+    if (b >= outLen) return false;
+    memcpy(out, built, b + 1);
+  }
+  return true;
+}
+
+void ensureDirTree(const char* dir) {
+  if (!dir || dir[0] != '/') return;
+  if (strcmp(dir, "/") == 0) return;
+  char path[160];
+  snprintf(path, sizeof(path), "%s", dir);
+  // Create each prefix: /a, /a/b, ...
+  for (char* p = path + 1; *p; ++p) {
+    if (*p != '/') continue;
+    *p = 0;
+    if (!SD.exists(path)) SD.mkdir(path);
+    *p = '/';
+  }
+  if (!SD.exists(path)) SD.mkdir(path);
 }
 
 const char* leafName(const char* name) {
@@ -69,7 +218,7 @@ const char* leafName(const char* name) {
   const char* base = slash ? slash + 1 : name;
   const char* bslash = strrchr(base, '\\');
   base = bslash ? bslash + 1 : base;
-  return base[0] ? base : "upload.bin";
+  return (base[0] && isSafePathSegment(base)) ? base : "upload.bin";
 }
 
 void handleRoot() {
@@ -77,16 +226,69 @@ void handleRoot() {
   gServer->send(200, "text/html", kIndexHtml);
 }
 
-void handleWifiSave() {
-  const String ssid = gServer->arg("ssid");
-  const String pass = gServer->arg("pass");
-  if (ssid.length() == 0) {
-    gServer->send(400, "text/plain", "SSID required");
+void handleList() {
+  char path[160];
+  const String raw = gServer->hasArg("path") ? gServer->arg("path") : String("/");
+  if (!normalizeDirPath(raw.c_str(), path, sizeof(path))) {
+    gServer->send(400, "application/json", "{\"error\":\"Bad path\"}");
     return;
   }
-  wifiSaveNetwork(ssid.c_str(), pass.c_str());
-  snprintf(gLastMsg, sizeof(gLastMsg), "Saved Wi‑Fi: %s", ssid.c_str());
-  gServer->send(200, "text/plain", "Saved. You can join this network from the device.");
+
+  File dir = SD.open(path);
+  if (!dir || !dir.isDirectory()) {
+    if (dir) dir.close();
+    gServer->send(404, "application/json", "{\"error\":\"Not a folder\"}");
+    return;
+  }
+
+  String json;
+  json.reserve(512);
+  json += "{\"path\":\"";
+  json += path;
+  json += "\",\"dirs\":[";
+  bool firstDir = true;
+  bool firstFile = true;
+  String files = "],\"files\":[";
+
+  // Cap entries so SoftAP responses stay small.
+  int n = 0;
+  for (File f = dir.openNextFile(); f && n < 80; f = dir.openNextFile(), ++n) {
+    const char* name = f.name();
+    // SdFat/SD may return full path; keep leaf only.
+    const char* leaf = strrchr(name, '/');
+    leaf = leaf ? leaf + 1 : name;
+    if (!leaf[0] || strcmp(leaf, ".") == 0 || strcmp(leaf, "..") == 0) {
+      f.close();
+      continue;
+    }
+    // Escape minimal JSON string chars.
+    auto appendEscaped = [](String& s, const char* t) {
+      for (; *t; ++t) {
+        if (*t == '"' || *t == '\\') s += '\\';
+        if (static_cast<unsigned char>(*t) < 0x20) continue;
+        s += *t;
+      }
+    };
+    if (f.isDirectory()) {
+      if (!firstDir) json += ',';
+      firstDir = false;
+      json += '"';
+      appendEscaped(json, leaf);
+      json += '"';
+    } else {
+      if (!firstFile) files += ',';
+      firstFile = false;
+      files += '"';
+      appendEscaped(files, leaf);
+      files += '"';
+    }
+    f.close();
+  }
+  dir.close();
+  json += files;
+  json += "]}";
+  gServer->sendHeader("Cache-Control", "no-store");
+  gServer->send(200, "application/json", json);
 }
 
 void handleUpload() {
@@ -94,13 +296,18 @@ void handleUpload() {
   if (upload.status == UPLOAD_FILE_START) {
     gUploadOk = false;
     gUploadPath[0] = 0;
-    ensureDir(gUploadDir);
-    const char* leaf = leafName(upload.filename.c_str());
-    if (strchr(leaf, '/') || strchr(leaf, '\\') || strstr(leaf, "..")) {
-      snprintf(gLastMsg, sizeof(gLastMsg), "Bad filename");
+    const String raw = gServer->hasArg("dir") ? gServer->arg("dir") : String("/");
+    if (!normalizeDirPath(raw.c_str(), gUploadDir, sizeof(gUploadDir))) {
+      snprintf(gLastMsg, sizeof(gLastMsg), "Bad folder path");
       return;
     }
-    snprintf(gUploadPath, sizeof(gUploadPath), "%s/%s", gUploadDir, leaf);
+    ensureDirTree(gUploadDir);
+    const char* leaf = leafName(upload.filename.c_str());
+    if (strcmp(gUploadDir, "/") == 0) {
+      snprintf(gUploadPath, sizeof(gUploadPath), "/%s", leaf);
+    } else {
+      snprintf(gUploadPath, sizeof(gUploadPath), "%s/%s", gUploadDir, leaf);
+    }
     if (SD.exists(gUploadPath)) SD.remove(gUploadPath);
     gUpload = SD.open(gUploadPath, FILE_WRITE);
     if (!gUpload) {
@@ -142,17 +349,21 @@ void handleUploadDone() {
   else gServer->send(500, "text/plain", gLastMsg[0] ? gLastMsg : "Upload failed");
 }
 
-void uploadFirmware() {
-  gUploadDir = "/firmware";
-  handleUpload();
-}
-void uploadSleep() {
-  gUploadDir = "/sleep";
-  handleUpload();
-}
-
 void handleNotFound() {
   handleRoot();
+}
+
+void handleNoContent() {
+  gServer->send(204);
+}
+
+void handleAppleCaptive() {
+  gServer->send(200, "text/html",
+                "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>");
+}
+
+void handleNcsi() {
+  gServer->send(200, "text/plain", "Microsoft NCSI");
 }
 
 }  // namespace
@@ -162,10 +373,17 @@ bool wifiServerStart() {
   gServer = new WebServer(80);
   if (!gServer) return false;
   gServer->on("/", HTTP_GET, handleRoot);
-  gServer->on("/upload/firmware", HTTP_POST, handleUploadDone, uploadFirmware);
-  gServer->on("/upload/sleep", HTTP_POST, handleUploadDone, uploadSleep);
-  gServer->on("/upload", HTTP_POST, handleUploadDone, uploadFirmware);
-  gServer->on("/wifi", HTTP_POST, handleWifiSave);
+  gServer->on("/api/ls", HTTP_GET, handleList);
+  gServer->on("/upload", HTTP_POST, handleUploadDone, handleUpload);
+  // Captive / connectivity checks so phones open a browser to our page.
+  gServer->on("/generate_204", HTTP_GET, handleNoContent);
+  gServer->on("/gen_204", HTTP_GET, handleNoContent);
+  gServer->on("/hotspot-detect.html", HTTP_GET, handleAppleCaptive);
+  gServer->on("/library/test/success.html", HTTP_GET, handleAppleCaptive);
+  gServer->on("/ncsi.txt", HTTP_GET, handleNcsi);
+  gServer->on("/connecttest.txt", HTTP_GET, handleNcsi);
+  gServer->on("/fwlink/", HTTP_GET, handleRoot);
+  gServer->on("/canonical.html", HTTP_GET, handleRoot);
   gServer->onNotFound(handleNotFound);
   gServer->begin();
   Serial.println("WiFi: web server on :80");

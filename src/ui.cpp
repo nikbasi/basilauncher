@@ -3,6 +3,8 @@
 #include "board_hal.h"
 #include "canvas.h"
 #include "file_ops.h"
+#include "qr_draw.h"
+#include "wifi_session.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -474,10 +476,11 @@ void uiDrawSplash() {
 }
 
 void filesChipRect(int& x, int& y, int& w, int& h) {
+  // Full footer height, wide tap target — one tap should open Files reliably.
   x = kPad;
-  y = kScreenH - kHomeFooterH + 8;
-  w = 132;
-  h = kHomeFooterH - 16;
+  y = kScreenH - kHomeFooterH;
+  w = kScreenW - 2 * kPad - 140;  // leave room for the free-space label
+  h = kHomeFooterH;
 }
 
 void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space, bool stable) {
@@ -493,7 +496,8 @@ void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space, bool 
 
   int fx, fy, fw, fh;
   filesChipRect(fx, fy, fw, fh);
-  drawChromeOutlineBtn(fx, fy, fw, fh, "Files");
+  // Inset the drawn chip slightly so it doesn't collide with the footer rule.
+  drawChromeOutlineBtn(fx, fy + 8, std::min(fw, 160), fh - 16, "Files");
 
   char freeBuf[24], freeLine[40];
   appsFormatBytes(space.guestFree, freeBuf, sizeof(freeBuf));
@@ -531,7 +535,7 @@ enum class EntryIcon { Folder, Bin, Image, Text, File };
 EntryIcon entryIconKind(const DirEntry& e) {
   if (e.isDir) return EntryIcon::Folder;
   if (fileOpsIsBin(e.name.c_str())) return EntryIcon::Bin;
-  if (fileOpsIsBmp(e.name.c_str())) return EntryIcon::Image;
+  if (fileOpsIsImage(e.name.c_str())) return EntryIcon::Image;
   if (fileOpsIsText(e.name.c_str())) return EntryIcon::Text;
   return EntryIcon::File;
 }
@@ -1224,7 +1228,7 @@ void uiDrawSettings(const FlashSpace& space) {
   snprintf(dayBuf, sizeof(dayBuf), "%u", clock.valid ? clock.day : 1);
   drawSettingsStepper(g.dayY, "Day", dayBuf, g.rowMinusX, g.rowPlusX);
 
-  drawOutlineBtn(kPad, g.wifiY, kScreenW - 2 * kPad, kActionBtnH, "Wi‑Fi transfer");
+  drawOutlineBtn(kPad, g.wifiY, kScreenW - 2 * kPad, kActionBtnH, "Wi-Fi transfer");
   drawOutlineBtn(kPad, g.powerY, kScreenW - 2 * kPad, kActionBtnH, "Sleep / power off");
   drawFilledBtn(kPad, g.backY, kScreenW - 2 * kPad, kActionBtnH, "Back");
   canvasDrawString(kPad, g.tipY, "Hold BOOT to sleep. Press to wake.", true, kSmall);
@@ -1351,55 +1355,63 @@ UiHit uiHitHardware(int x, int y) {
 }
 
 void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssidLine,
-                const char* urlLine, const char* detailLine, bool hasSaved, bool active,
-                bool station) {
+                const char* urlLine, const char* detailLine, bool active) {
   canvasClear();
   drawStatusBar(space, true);
   int y = statusBarH() + kPad;
-  canvasDrawString(kPad, y, "Wi‑Fi transfer", true, kTitle);
-  y += canvasTextHeight(kTitle) + 18;
+  canvasDrawString(kPad, y, "Wi-Fi transfer", true, kTitle);
+  y += canvasTextHeight(kTitle) + 14;
 
   auto line = [&](const char* label, const char* value) {
     canvasDrawString(kPad, y, label, true, kSmall);
-    y += canvasTextHeight(kSmall) + 4;
-    canvasDrawString(kPad, y, value && value[0] ? value : "—", true, kBody);
-    y += canvasTextHeight(kBody) + 14;
+    y += canvasTextHeight(kSmall) + 2;
+    canvasDrawString(kPad, y, value && value[0] ? value : "-", true, kBody);
+    y += canvasTextHeight(kBody) + 10;
   };
   line("Status", statusLine);
   line("Network", ssidLine);
   line("Open in browser", urlLine);
-  if (detailLine && detailLine[0]) {
-    canvasDrawString(kPad, y, detailLine, true, kSmall);
-    y += canvasTextHeight(kSmall) + 18;
-  } else {
-    y += 8;
+  // Always reserve one detail row so hit-testing matches.
+  canvasDrawString(kPad, y, (detailLine && detailLine[0]) ? detailLine : " ", true, kSmall);
+  y += canvasTextHeight(kSmall) + 12;
+
+  // QR codes when hotspot is live: join SoftAP + open the page URL.
+  if (active && urlLine && urlLine[0]) {
+    const int qrSize = 180;
+    const int qrTop = y;
+    char wifiPayload[80];
+    snprintf(wifiPayload, sizeof(wifiPayload), "WIFI:T:nopass;S:%s;P:;;", wifiApSsid());
+    const int gap = 16;
+    const int pairW = qrSize * 2 + gap;
+    const int x0 = (kScreenW - pairW) / 2;
+    canvasDrawQr(x0, qrTop, qrSize, wifiPayload);
+    canvasDrawQr(x0 + qrSize + gap, qrTop, qrSize, urlLine);
+    y = qrTop + qrSize + 4;
+    const int labelY = y;
+    canvasDrawString(x0, labelY, "Join Wi-Fi", true, kSmall);
+    canvasDrawString(x0 + qrSize + gap, labelY, "Open page", true, kSmall);
+    y = labelY + canvasTextHeight(kSmall) + 12;
   }
 
   const int btnW = kScreenW - 2 * kPad;
+  const int backY = kScreenH - kPad - kActionBtnH;
+  auto placeBtn = [&](const char* label, bool filled) {
+    if (y + kActionBtnH + 10 > backY) return;
+    if (filled) drawFilledBtn(kPad, y, btnW, kActionBtnH, label);
+    else drawOutlineBtn(kPad, y, btnW, kActionBtnH, label);
+    y += kActionBtnH + 10;
+  };
+
   if (!active) {
-    drawFilledBtn(kPad, y, btnW, kActionBtnH, "Start hotspot");
-    y += kActionBtnH + 10;
-    if (hasSaved) {
-      drawOutlineBtn(kPad, y, btnW, kActionBtnH, "Join saved Wi‑Fi");
-      y += kActionBtnH + 10;
-    }
+    placeBtn("Start hotspot", true);
   } else {
-    if (station) {
-      drawOutlineBtn(kPad, y, btnW, kActionBtnH, "Sync clock (NTP)");
-      y += kActionBtnH + 10;
-    }
-    drawOutlineBtn(kPad, y, btnW, kActionBtnH, "Stop Wi‑Fi");
-    y += kActionBtnH + 10;
+    placeBtn("Stop Wi-Fi", false);
   }
-  if (hasSaved) {
-    drawOutlineBtn(kPad, y, btnW, kActionBtnH, "Forget saved network");
-    y += kActionBtnH + 10;
-  }
-  drawFilledBtn(kPad, kScreenH - kPad - kActionBtnH, btnW, kActionBtnH, "Back");
+  drawFilledBtn(kPad, backY, btnW, kActionBtnH, "Back");
   presentNavigation();
 }
 
-UiHit uiHitWifi(int x, int y, bool hasSaved, bool active, bool station) {
+UiHit uiHitWifi(int x, int y, bool active) {
   UiHit hit;
   if (y < statusBarH()) {
     hit.kind = UiHit::Kind::OpenShade;
@@ -1412,12 +1424,18 @@ UiHit uiHitWifi(int x, int y, bool hasSaved, bool active, bool station) {
     return hit;
   }
 
-  int by = statusBarH() + kPad + canvasTextHeight(kTitle) + 18;
-  // Skip the four text blocks roughly matching uiDrawWifi layout.
-  by += (canvasTextHeight(kSmall) + 4 + canvasTextHeight(kBody) + 14) * 3;
-  by += canvasTextHeight(kSmall) + 18;
+  int by = statusBarH() + kPad + canvasTextHeight(kTitle) + 14;
+  by += (canvasTextHeight(kSmall) + 2 + canvasTextHeight(kBody) + 10) * 3;
+  by += canvasTextHeight(kSmall) + 12;
+
+  if (active) {
+    constexpr int qrSize = 180;
+    by += qrSize + 4;
+    by += canvasTextHeight(kSmall) + 12;
+  }
 
   auto hitBtn = [&](UiHit::Kind kind) -> bool {
+    if (by + kActionBtnH + 10 > backY) return false;
     if (y >= by && y < by + kActionBtnH && x >= kPad && x < kPad + btnW) {
       hit.kind = kind;
       return true;
@@ -1428,12 +1446,9 @@ UiHit uiHitWifi(int x, int y, bool hasSaved, bool active, bool station) {
 
   if (!active) {
     if (hitBtn(UiHit::Kind::WifiStartAp)) return hit;
-    if (hasSaved && hitBtn(UiHit::Kind::WifiJoinSaved)) return hit;
   } else {
-    if (station && hitBtn(UiHit::Kind::WifiSyncClock)) return hit;
     if (hitBtn(UiHit::Kind::WifiStop)) return hit;
   }
-  if (hasSaved && hitBtn(UiHit::Kind::WifiForget)) return hit;
   return hit;
 }
 

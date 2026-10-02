@@ -32,10 +32,7 @@ struct UiHit {
     Hardware,
     Wifi,
     WifiStartAp,
-    WifiJoinSaved,
     WifiStop,
-    WifiSyncClock,
-    WifiForget,
     Back,
     PowerOff,
     SelectEntry,
@@ -118,8 +115,7 @@ void uiRedrawExplorerViewport(const std::vector<DirEntry>& entries, const Explor
 void uiDrawSettings(const FlashSpace& space);
 void uiDrawHardware(const FlashSpace& space);
 void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssidLine,
-                const char* urlLine, const char* detailLine, bool hasSaved, bool active,
-                bool station);
+                const char* urlLine, const char* detailLine, bool active);
 void uiDrawShade(const FlashSpace& space);
 void uiRedrawShadeControls(const FlashSpace& space);
 void uiRedrawHomeStatus(const FlashSpace& space);
@@ -140,7 +136,7 @@ UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool
                     bool clipboardHas, int selectedCount);
 UiHit uiHitSettings(int x, int y);
 UiHit uiHitHardware(int x, int y);
-UiHit uiHitWifi(int x, int y, bool hasSaved, bool active, bool station);
+UiHit uiHitWifi(int x, int y, bool active);
 UiHit uiHitShade(int x, int y);
 UiHit uiHitConfirm(int x, int y);
 UiHit uiHitTextEdit(int x, int y, bool symbols, bool shift);

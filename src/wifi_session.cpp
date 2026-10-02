@@ -49,6 +49,10 @@ void fillIp(char* out, size_t n, IPAddress ip) {
 
 }  // namespace
 
+const char* wifiApSsid() {
+  return kApSsid;
+}
+
 bool wifiHasSavedNetwork() {
   loadCreds();
   return gSavedSsid[0] != 0;
@@ -86,21 +90,43 @@ void wifiClearSavedNetwork() {
 
 bool wifiStartSoftAp() {
   wifiStop();
+  WiFi.persistent(false);
   WiFi.mode(WIFI_AP);
   delay(50);
-  const bool ok = WiFi.softAP(kApSsid, nullptr, kApChannel, false, 4);
+
+  // Pin SoftAP to 192.168.4.1 before start (Arduino-ESP32 DHCP/gateway).
+  const IPAddress apIp(192, 168, 4, 1);
+  const IPAddress gateway(192, 168, 4, 1);
+  const IPAddress subnet(255, 255, 255, 0);
+  if (!WiFi.softAPConfig(apIp, gateway, subnet)) {
+    Serial.println("WiFi: softAPConfig failed");
+  }
+
+  // Empty password string = open network (more reliable than nullptr on some cores).
+  const bool ok = WiFi.softAP(kApSsid, "", kApChannel, 0, 4);
   if (!ok) {
     Serial.println("WiFi: SoftAP failed");
     WiFi.mode(WIFI_OFF);
     gMode = WifiMode::Off;
     return false;
   }
-  delay(80);
+
+  // Re-apply after softAP — some cores ignore the pre-start config.
+  WiFi.softAPConfig(apIp, gateway, subnet);
+
+  for (int i = 0; i < 50; ++i) {
+    delay(20);
+    if (WiFi.softAPIP() == apIp) break;
+  }
+  if (WiFi.softAPIP() != apIp) {
+    Serial.printf("WiFi: SoftAP IP unexpected: %s\n", WiFi.softAPIP().toString().c_str());
+  }
   gMode = WifiMode::SoftAp;
 
   gDns = new DNSServer();
   if (gDns) {
-    gDns->start(53, "*", WiFi.softAPIP());
+    gDns->setErrorReplyCode(DNSReplyCode::NoError);
+    gDns->start(53, "*", apIp);
   }
 
   Serial.printf("WiFi: SoftAP '%s' ip=%s\n", kApSsid, WiFi.softAPIP().toString().c_str());
@@ -155,9 +181,10 @@ WifiStatus wifiGetStatus() {
   if (gMode == WifiMode::SoftAp) {
     st.connected = true;
     snprintf(st.ssid, sizeof(st.ssid), "%s", kApSsid);
-    fillIp(st.ip, sizeof(st.ip), WiFi.softAPIP());
-    snprintf(st.url, sizeof(st.url), "http://%s/", st.ip);
-    snprintf(st.detail, sizeof(st.detail), "Open network — join from phone");
+    // Always advertise the pinned SoftAP address (matches softAPConfig).
+    snprintf(st.ip, sizeof(st.ip), "192.168.4.1");
+    snprintf(st.url, sizeof(st.url), "http://192.168.4.1/");
+    snprintf(st.detail, sizeof(st.detail), "Open network - join from phone");
   } else if (gMode == WifiMode::Station) {
     st.connected = WiFi.status() == WL_CONNECTED;
     snprintf(st.ssid, sizeof(st.ssid), "%s", WiFi.SSID().c_str());
@@ -170,7 +197,7 @@ WifiStatus wifiGetStatus() {
       snprintf(st.detail, sizeof(st.detail), "Disconnected");
     }
   } else {
-    snprintf(st.detail, sizeof(st.detail), "Wi‑Fi off");
+    snprintf(st.detail, sizeof(st.detail), "Wi-Fi off");
   }
   return st;
 }
@@ -201,7 +228,7 @@ bool wifiSyncClock(uint32_t timeoutMs) {
       boardSetClock(static_cast<uint16_t>(tm.tm_year + 1900), static_cast<uint8_t>(tm.tm_mon + 1),
                     static_cast<uint8_t>(tm.tm_mday), static_cast<uint8_t>(tm.tm_hour),
                     static_cast<uint8_t>(tm.tm_min));
-  Serial.printf("WiFi: NTP %s → %04d-%02d-%02d %02d:%02d UTC\n", ok ? "ok" : "rtc fail",
+  Serial.printf("WiFi: NTP %s -> %04d-%02d-%02d %02d:%02d UTC\n", ok ? "ok" : "rtc fail",
                 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
   return ok;
 }

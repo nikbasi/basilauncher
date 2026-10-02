@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-// Draw a random BMP from /sleep or /.sleep (same folders many readers use), then
+// Draw a random BMP/JPEG from /sleep or /.sleep (same folders many readers use), then
 // deep-sleep. Falls back to a plain white frame if none are found.
 // quiet=true skips the "Entering sleep..." toast (used on debounce / short-press re-sleep).
 // Returns false if BOOT is held long enough during entry so wake can take priority

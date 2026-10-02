@@ -31,8 +31,11 @@ bool wifiIsActive();
 WifiMode wifiCurrentMode();
 WifiStatus wifiGetStatus();
 
-// Poll DNS (captive) — call from loop while Wi‑Fi screen is open.
+// Poll DNS (captive) - call from loop while Wi-Fi screen is open.
 void wifiPoll();
 
-// Best-effort NTP → RTC. Requires Station with internet.
+// Best-effort NTP -> RTC. Requires Station with internet.
 bool wifiSyncClock(uint32_t timeoutMs = 8000);
+
+// SoftAP SSID used for WIFI: QR payloads.
+const char* wifiApSsid();

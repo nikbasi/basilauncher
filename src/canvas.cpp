@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <esp_heap_caps.h>
+#include <esp_task_wdt.h>
 
 namespace {
 
@@ -95,6 +96,7 @@ void clearGrayPlanes() {
 }
 
 void presentCleanFrame(const char* reason) {
+  esp_task_wdt_reset();
   const uint32_t started = millis();
   const bool gray = gGrayUsed && gGrayLsb && gGrayMsb && display.supportsGrayFrame();
   if (gray) {
@@ -197,6 +199,7 @@ int canvasTitleCellH() {
 }
 
 void canvasPresent(EInkDisplay::RefreshMode mode) {
+  esp_task_wdt_reset();
   const uint32_t started = millis();
   const bool clean = mode != EInkDisplay::FAST_REFRESH;
   const bool gray = clean && gGrayUsed && gGrayLsb && gGrayMsb && display.supportsGrayFrame();
@@ -234,6 +237,7 @@ void canvasPresentFor(CanvasRefreshIntent intent, CanvasRect dirty) {
 
   const CanvasRect native = toPhysicalRect(dirty);
   const bool full = dirty.x == 0 && dirty.y == 0 && dirty.w == kScreenW && dirty.h == kScreenH;
+  esp_task_wdt_reset();
   const uint32_t started = millis();
   if (full) {
     display.displayBuffer(EInkDisplay::FAST_REFRESH, false);

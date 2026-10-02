@@ -94,6 +94,10 @@ bool fileOpsEndsWith(const char* name, const char* ext) {
 
 bool fileOpsIsBin(const char* name) { return fileOpsEndsWith(name, ".bin"); }
 bool fileOpsIsBmp(const char* name) { return fileOpsEndsWith(name, ".bmp"); }
+bool fileOpsIsJpeg(const char* name) {
+  return fileOpsEndsWith(name, ".jpg") || fileOpsEndsWith(name, ".jpeg");
+}
+bool fileOpsIsImage(const char* name) { return fileOpsIsBmp(name) || fileOpsIsJpeg(name); }
 
 bool fileOpsIsText(const char* name) {
   return fileOpsEndsWith(name, ".txt") || fileOpsEndsWith(name, ".md") ||
