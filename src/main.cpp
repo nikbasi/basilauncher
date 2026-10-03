@@ -42,6 +42,7 @@ uint32_t gLastHomeScrubMs = 0;
 char gTextBuf[kTextEditMax];
 size_t gTextLen = 0;
 char gTextPath[kFilePathMax] = {};
+char gImagePath[kFilePathMax] = {};
 char gTextTitle[48] = {};
 TextEditMode gTextMode = TextEditMode::EditFile;
 bool gOskShift = false;
@@ -52,6 +53,7 @@ ConfirmAction gConfirmAction = ConfirmAction::None;
 std::vector<std::string> gConfirmPaths;
 
 bool gMessageReturnExplorer = false;
+bool gMessageReturnWifi = false;
 
 void noteActivity() { gLastActiveMs = millis(); }
 
@@ -128,6 +130,15 @@ void maybeIdleScrubHome() {
 void showMessage(const char* title, const char* body, bool returnExplorer) {
   canvasSetHoldCleanRefresh(false);
   gMessageReturnExplorer = returnExplorer;
+  gMessageReturnWifi = false;
+  gScreen = Screen::Message;
+  uiDrawMessage(title, body);
+}
+
+void showWifiNotice(const char* title, const char* body) {
+  canvasSetHoldCleanRefresh(false);
+  gMessageReturnExplorer = false;
+  gMessageReturnWifi = true;
   gScreen = Screen::Message;
   uiDrawMessage(title, body);
 }
@@ -294,11 +305,15 @@ void installSelectedBin() {
 void openImage(const char* path) {
   uiDrawProgress("Opening image...", 30);
   gScreen = Screen::ImageView;
+  canvasReleaseCapture();
+  gImagePath[0] = 0;
   if (!imageDrawFile(path)) {
     showMessage("Image", "Could not open image.", true);
     return;
   }
-  uiDrawImageViewHint();
+  snprintf(gImagePath, sizeof(gImagePath), "%s", path ? path : "");
+  canvasCaptureFrame();
+  uiDrawImageViewHint(false);
 }
 
 void redrawTextEdit(bool scrub = false) {
@@ -343,7 +358,8 @@ void openTextFile(const char* path, const char* name) {
 }
 
 void textAppend(char ch) {
-  if (gTextLen + 1 >= sizeof(gTextBuf)) return;
+  const size_t limit = gTextMode == TextEditMode::ApPassword ? 63 : sizeof(gTextBuf) - 1;
+  if (gTextLen >= limit) return;
   gTextBuf[gTextLen++] = ch;
   gTextBuf[gTextLen] = 0;
 }
@@ -360,8 +376,35 @@ bool nameLooksSafe(const char* name) {
   return true;
 }
 
+void redrawWifi();
+void stopWifiSession();
+void showShade();
+void startWifiHotspot(bool openDetails);
+
+void applyApPassword(bool save) {
+  if (!save) {
+    redrawWifi();
+    return;
+  }
+  if (!wifiSetApPassword(gTextBuf)) {
+    showWifiNotice("Password", "Use 8 to 63 characters.");
+    return;
+  }
+  if (wifiIsActive()) {
+    stopWifiSession();
+    startWifiHotspot(true);
+    return;
+  }
+  redrawWifi();
+}
+
 void finishTextEdit(bool save) {
   canvasRequestCleanRefresh();
+
+  if (gTextMode == TextEditMode::ApPassword) {
+    applyApPassword(save);
+    return;
+  }
 
   if (!save) {
     redrawExplorer();
@@ -606,7 +649,7 @@ void stopWifiSession() {
   wifiStop();
 }
 
-void startWifiHotspot() {
+void startWifiHotspot(bool openDetails) {
   uiDrawProgress("Starting hotspot...", 10);
   if (!wifiStartSoftAp() || !wifiServerStart()) {
     stopWifiSession();
@@ -614,7 +657,8 @@ void startWifiHotspot() {
     return;
   }
   wifiServerClearMessage();
-  redrawWifi();
+  if (openDetails) redrawWifi();
+  else showShade();
 }
 
 void showWifi() {
@@ -727,6 +771,14 @@ void handleShadeHit(const UiHit& hit) {
       gScreen = Screen::Settings;
       refreshSlots();
       uiDrawSettings(gSpace);
+      break;
+    case UiHit::Kind::Wifi:
+      if (wifiIsActive()) {
+        stopWifiSession();
+        showShade();
+      } else {
+        startWifiHotspot(false);
+      }
       break;
     default:
       break;
@@ -906,7 +958,10 @@ void handleTextHit(const UiHit& hit) {
 
 void handleTouch(int x, int y) {
   if (gScreen == Screen::Message) {
-    if (gMessageReturnExplorer) redrawExplorer();
+    const bool backToWifi = gMessageReturnWifi;
+    gMessageReturnWifi = false;
+    if (backToWifi) redrawWifi();
+    else if (gMessageReturnExplorer) redrawExplorer();
     else showHome();
     return;
   }
@@ -925,8 +980,18 @@ void handleTouch(int x, int y) {
   }
 
   if (gScreen == Screen::ImageView) {
+    const UiHit hit = uiHitImageView(x, y);
+    if (hit.kind == UiHit::Kind::SetSleep) {
+      if (sleepSaveCapturedFrame(gImagePath)) uiDrawImageViewHint(true);
+      else {
+        canvasReleaseCapture();
+        showMessage("Sleep", "Could not save the screensaver.", true);
+      }
+      return;
+    }
     esp_task_wdt_reset();
     canvasCancelPendingClean();
+    canvasReleaseCapture();
     redrawExplorer();
     return;
   }
@@ -1082,10 +1147,12 @@ void handleTouch(int x, int y) {
     } else if (hit.kind == UiHit::Kind::OpenShade) {
       showShade();
     } else if (hit.kind == UiHit::Kind::WifiStartAp) {
-      startWifiHotspot();
+      startWifiHotspot(true);
     } else if (hit.kind == UiHit::Kind::WifiStop) {
       stopWifiSession();
       redrawWifi();
+    } else if (hit.kind == UiHit::Kind::WifiChangePass) {
+      openTextEditor(TextEditMode::ApPassword, "Hotspot password", wifiApPassword(), nullptr);
     }
     return;
   }
@@ -1197,6 +1264,11 @@ void loop() {
       noteActivity();
       redrawWifi();
     }
+    if (wifiServerTakeApRestart()) {
+      stopWifiSession();
+      if (gScreen == Screen::Wifi) startWifiHotspot(true);
+      else if (!wifiStartSoftAp() || !wifiServerStart()) stopWifiSession();
+    }
   }
 
   boardInputUpdate();
@@ -1222,6 +1294,12 @@ void loop() {
       if (held.kind == UiHit::Kind::SelectEntry) {
         noteActivity();
         handleExplorerLongPress(held.index);
+      }
+    } else if (gScreen == Screen::Shade) {
+      const UiHit held = uiHitShade(longPressX, longPressY);
+      if (held.kind == UiHit::Kind::Wifi) {
+        noteActivity();
+        showWifi();
       }
     }
   }
@@ -1325,7 +1403,6 @@ void loop() {
       gLastClockMinute = c.minute;
       refreshSlots();
       uiRedrawHomeStatus(gSpace);
-      gLastHomeScrubMs = millis();
     }
   }
 

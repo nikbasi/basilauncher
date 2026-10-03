@@ -467,7 +467,7 @@ int canvasTextWidth(const char* text, int scale) {
   return n * kFont8x16W * scale;
 }
 
-void canvasDrawString(int x, int y, const char* text, bool black, int scale) {
+void canvasDrawString(int x, int y, const char* text, bool black, int scale, bool bold) {
   if (!text) return;
   if (scale < 1) scale = 1;
   int cellW = kFont8x16W * scale;
@@ -504,11 +504,54 @@ void canvasDrawString(int x, int y, const char* text, bool black, int scale) {
         const int pw = std::max(1, x1 - x0);
         if (pw == 1 && ph == 1) canvasSetPixel(x0, y0, black);
         else canvasFillRect(x0, y0, pw, ph, black);
+        if (bold && scale <= 1) {
+          if (ph == 1) canvasSetPixel(x0 + pw, y0, black);
+          else canvasFillRect(x0 + pw, y0, 1, ph, black);
+        }
       }
     }
     cx += cellW;
   }
 }
+
+namespace {
+uint8_t* gCapture = nullptr;
+size_t gCaptureBytes = 0;
+}  // namespace
+
+bool canvasCaptureFrame() {
+  canvasReleaseCapture();
+  uint8_t* fb = display.getFrameBuffer();
+  const size_t n = display.getBufferSize();
+  if (!fb || n == 0) return false;
+  gCapture = static_cast<uint8_t*>(heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!gCapture) gCapture = static_cast<uint8_t*>(heap_caps_malloc(n, MALLOC_CAP_8BIT));
+  if (!gCapture) return false;
+  memcpy(gCapture, fb, n);
+  gCaptureBytes = n;
+  return true;
+}
+
+void canvasReleaseCapture() {
+  if (gCapture) heap_caps_free(gCapture);
+  gCapture = nullptr;
+  gCaptureBytes = 0;
+}
+
+bool canvasHasCapture() { return gCapture != nullptr && gCaptureBytes > 0; }
+
+const uint8_t* canvasCapturedFrame() { return gCapture; }
+
+size_t canvasCapturedBytes() { return gCaptureBytes; }
+
+void canvasRestoreCapture() {
+  uint8_t* fb = display.getFrameBuffer();
+  if (!fb || !gCapture || gCaptureBytes != display.getBufferSize()) return;
+  memcpy(fb, gCapture, gCaptureBytes);
+  clearGrayPlanes();
+}
+
+void canvasDiscardGray() { clearGrayPlanes(); }
 
 void canvasTouchToLogical(float nx, float ny, int& x, int& y) {
   // Inverse of portrait tap mapping.

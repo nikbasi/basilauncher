@@ -20,8 +20,12 @@ void wifiSaveNetwork(const char* ssid, const char* pass);
 void wifiClearSavedNetwork();
 void wifiGetSavedSsid(char* out, size_t outLen);
 
-// Start open SoftAP "Basilauncher". Returns false on failure.
+// Start WPA2 SoftAP "Basilauncher". Returns false on failure.
 bool wifiStartSoftAp();
+
+// Hotspot passphrase (8-63 printable characters). Default is "basilauncher".
+const char* wifiApPassword();
+bool wifiSetApPassword(const char* pass);
 
 // Join saved network (blocking up to timeoutMs). Returns false on failure.
 bool wifiStartStation(uint32_t timeoutMs = 20000);

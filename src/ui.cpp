@@ -7,6 +7,7 @@
 #include "wifi_session.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -120,6 +121,11 @@ struct ShadeGeom {
   int panelW = 0;
   int panelH = 0;
   int titleY = 0;
+  int tileX = 0;
+  int tileY = 0;
+  int tileW = 0;
+  int tileH = 0;
+  int icon = 0;
   int frontRuleY = 0;
   int frontLabelY = 0;
   int sliderY = 0;
@@ -137,7 +143,14 @@ ShadeGeom shadeGeom() {
 
   int y = g.panelY + 12;
   g.titleY = y;
-  y += canvasTextHeight(kTitle) + 10;
+  y += canvasTextHeight(kTitle) + 12;
+  g.icon = 72;
+  const int labelW = canvasTextWidth("Wi-Fi", kBody);
+  g.tileW = std::max(g.icon, labelW + 8);
+  g.tileH = g.icon + 4 + canvasTextHeight(kBody);
+  g.tileX = kPad + 8;
+  g.tileY = y;
+  y += g.tileH + 14;
   g.frontRuleY = y;
   y += 12;
   g.frontLabelY = y;
@@ -212,8 +225,7 @@ SettingsGeom settingsGeom() {
   g.dayY = y;
   y += step + 16;
 
-  g.wifiY = y;
-  y += kActionBtnH + 10;
+  g.wifiY = -1;
   g.powerY = y;
   y += kActionBtnH + 12;
   g.backY = y;
@@ -271,6 +283,34 @@ void drawBatteryGlyph(int x, int y, int percent, bool charging, bool plugged) {
   }
 }
 
+void drawStatusArc(int cx, int cy, int r, bool ink) {
+  auto point = [&](int deg, int& x, int& y) {
+    const float rad = static_cast<float>(deg) * 0.0174532925f;
+    x = cx + static_cast<int>(lroundf(cosf(rad) * static_cast<float>(r)));
+    y = cy + static_cast<int>(lroundf(sinf(rad) * static_cast<float>(r)));
+  };
+  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  point(210, x0, y0);
+  for (int deg = 230; deg <= 330; deg += 25) {
+    point(deg, x1, y1);
+    canvasDrawLine(x0, y0, x1, y1, ink);
+    x0 = x1;
+    y0 = y1;
+  }
+}
+
+// Compact fan. rightLimit is exclusive: every pixel stays at x < rightLimit,
+// which is the left edge of the lightning slot.
+void drawStatusWifiIcon(int rightLimit, int midY) {
+  constexpr int kR = 10;
+  const int cx = rightLimit - (kR + 2);
+  const int arcY = midY + 3;
+  canvasFillRect(cx - 1, arcY - 1, 3, 3, true);
+  drawStatusArc(cx, arcY, 4, true);
+  drawStatusArc(cx, arcY, 7, true);
+  drawStatusArc(cx, arcY, kR, true);
+}
+
 void drawStatusBar(const FlashSpace& space, bool showClosedGrabber) {
   const int barH = statusBarH();
   canvasFillRect(0, 0, kScreenW, barH, false);
@@ -299,17 +339,29 @@ void drawStatusBar(const FlashSpace& space, bool showClosedGrabber) {
     const int battX = clusterRight - textSlot - kTextGap - kBatterySpan;
     const int boltX = battX - kBoltSlot;
     const int battY = timeY + (timeH - 14) / 2;
-    // Wipe the icon strip first so FAST updates cannot leave a bolt ghost under
-    // the battery cell (common right after the boot splash).
-    canvasFillRect(boltX, battY - 3, kBoltSlot + kBatterySpan + 2, 20, false);
+    // Wi-Fi sits entirely left of the bolt slot so a charging cable cannot
+    // draw the lightning through the fan. The slot itself stays put.
+    constexpr int kWifiGap = 6;
+    constexpr int kWifiSlot = 26;
+    const int wifiRight = boltX - kWifiGap;
+    const int wifiLeft = wifiRight - kWifiSlot;
+    canvasFillRect(wifiLeft, battY - 8, (boltX - wifiLeft) + kBoltSlot + kBatterySpan + 2, 28, false);
+    if (wifiIsActive()) drawStatusWifiIcon(wifiRight, battY + 7);
     drawBatteryGlyph(battX, battY, power.percent, power.charging, power.plugged);
     if (power.charging) drawLightningBolt(boltX, battY - 3);
     canvasDrawString(clusterRight - canvasTextWidth(batt, kBody),
                      timeY + (timeH - canvasTextHeight(kBody)) / 2, batt, true, kBody);
   } else {
     const char* na = "batt --";
-    canvasDrawString(kScreenW - kPad - canvasTextWidth(na, kBody),
-                     timeY + (timeH - canvasTextHeight(kBody)) / 2, na, true, kBody);
+    const int naX = kScreenW - kPad - canvasTextWidth(na, kBody);
+    const int naY = timeY + (timeH - canvasTextHeight(kBody)) / 2;
+    constexpr int kWifiGap = 6;
+    constexpr int kWifiSlot = 26;
+    const int wifiRight = naX - kWifiGap;
+    const int wifiLeft = wifiRight - kWifiSlot;
+    canvasFillRect(wifiLeft, timeY, kWifiSlot, timeH, false);
+    if (wifiIsActive()) drawStatusWifiIcon(wifiRight, timeY + timeH / 2);
+    canvasDrawString(naX, naY, na, true, kBody);
   }
 
   const int brandY = timeY + timeH + 6;
@@ -336,7 +388,7 @@ void drawOutlineBtn(int x, int y, int w, int h, const char* label) {
   const int scale = btnLabelScale(label);
   const int tw = canvasTextWidth(label, scale);
   const int th = canvasTextHeight(scale);
-  canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, true, scale);
+  canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, true, scale, scale <= 1);
 }
 
 void drawFilledBtn(int x, int y, int w, int h, const char* label) {
@@ -344,7 +396,7 @@ void drawFilledBtn(int x, int y, int w, int h, const char* label) {
   const int scale = btnLabelScale(label);
   const int tw = canvasTextWidth(label, scale);
   const int th = canvasTextHeight(scale);
-  canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, false, scale);
+  canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, false, scale, scale <= 1);
 }
 
 void drawChromeOutlineBtn(int x, int y, int w, int h, const char* label) {
@@ -514,7 +566,10 @@ void uiRedrawStatusBar(const FlashSpace& space, bool showClosedGrabber) {
   const int h = statusBarH();
   canvasFillRect(0, 0, kScreenW, h, false);
   drawStatusBar(space, showClosedGrabber);
-  canvasPresentFor(CanvasRefreshIntent::InteractiveLocal, {0, 0, kScreenW, h});
+  // A windowed fast refresh drives every pixel in the strip, and the fast LUT
+  // parks that white as grey. A full-frame diff only drives the digits that
+  // actually changed, so the rest of the bar stays white.
+  canvasPresent(EInkDisplay::FAST_REFRESH);
 }
 
 void uiRedrawHomeStatus(const FlashSpace& space) { uiRedrawStatusBar(space, true); }
@@ -599,6 +654,43 @@ void drawIconClose(int cx, int cy, bool ink) {
     canvasDrawLine(cx - 11 + d, cy - 11, cx + 11 + d, cy + 11, ink);
     canvasDrawLine(cx + 11 + d, cy - 11, cx - 11 + d, cy + 11, ink);
   }
+}
+
+void drawWifiArc(int cx, int cy, int r, bool ink) {
+  auto point = [&](int deg, int& x, int& y) {
+    const float rad = static_cast<float>(deg) * 0.0174532925f;
+    x = cx + static_cast<int>(lroundf(cosf(rad) * static_cast<float>(r)));
+    y = cy + static_cast<int>(lroundf(sinf(rad) * static_cast<float>(r)));
+  };
+  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  point(205, x0, y0);
+  for (int deg = 220; deg <= 340; deg += 15) {
+    point(deg, x1, y1);
+    canvasDrawLine(x0, y0, x1, y1, ink);
+    canvasDrawLine(x0, y0 + 1, x1, y1 + 1, ink);
+    x0 = x1;
+    y0 = y1;
+  }
+}
+
+void drawIconWifi(int cx, int cy, bool ink) {
+  canvasFillRect(cx - 2, cy + 8, 5, 5, ink);
+  drawWifiArc(cx, cy + 10, 8, ink);
+  drawWifiArc(cx, cy + 10, 14, ink);
+  drawWifiArc(cx, cy + 10, 20, ink);
+}
+
+void drawQsTile(int x, int y, int icon, int tileW, bool filled, void (*iconFn)(int, int, bool),
+                const char* label) {
+  const int iconX = x + (tileW - icon) / 2;
+  if (filled) canvasFillRoundRect(iconX, y, icon, icon, 18, true);
+  else {
+    canvasFillRoundRect(iconX, y, icon, icon, 18, false);
+    canvasDrawRoundRect(iconX, y, icon, icon, 18, true);
+  }
+  iconFn(iconX + icon / 2, y + icon / 2, !filled);
+  const int lw = canvasTextWidth(label, kBody);
+  canvasDrawString(x + (tileW - lw) / 2, y + icon + 4, label, true, kBody, true);
 }
 
 void drawIconBack(int cx, int cy, bool ink) {
@@ -1049,6 +1141,8 @@ void drawShadeControls() {
   // Labels sit on the gray sheet — only interactive chrome gets a white fill.
   canvasDrawString(kPad + 8, g.titleY, "Quick settings", true, kTitle);
 
+  drawQsTile(g.tileX, g.tileY, g.icon, g.tileW, wifiIsActive(), drawIconWifi, "Wi-Fi");
+
   drawSectionRule(g.frontRuleY, g.panelX, g.panelW);
   canvasDrawString(kPad + 8, g.frontLabelY, "Frontlight", true, kBody);
 
@@ -1099,7 +1193,9 @@ void uiRedrawShadeControls(const FlashSpace& space) {
   canvasFillRect(0, 0, kScreenW, g.panelY + g.panelH, false);
   drawStatusBar(space, false);
   drawShadeControls();
-  canvasPresentFor(CanvasRefreshIntent::InteractiveLocal, {0, 0, kScreenW, g.panelY + g.panelH});
+  // Same as the status bar: a windowed fast refresh of this white sheet leaves
+  // it grey. A full-frame diff only drives the slider and the percent.
+  canvasPresent(EInkDisplay::FAST_REFRESH);
 }
 
 UiHit uiHitShade(int x, int y) {
@@ -1110,6 +1206,13 @@ UiHit uiHitShade(int x, int y) {
   if (y >= g.grabY || y >= panelBottom || y < g.panelY) {
     hit.kind = UiHit::Kind::CloseShade;
     return hit;
+  }
+
+  if (y >= g.tileY && y < g.tileY + g.tileH) {
+    if (x >= g.tileX && x < g.tileX + g.tileW) {
+      hit.kind = UiHit::Kind::Wifi;
+      return hit;
+    }
   }
 
   if (y >= g.sliderY && y < g.sliderY + kStepBtn) {
@@ -1152,7 +1255,7 @@ UiHit uiHitShade(int x, int y) {
 void drawSettingsStepper(int y, const char* label, const char* value, int minusX, int plusX) {
   constexpr int step = kStepBtn;
   const int bodyH = canvasTextHeight(kBody);
-  canvasDrawString(kPad, y + (step - bodyH) / 2, label, true, kBody);
+  canvasDrawString(kPad, y + (step - bodyH) / 2, label, true, kBody, true);
   drawOutlineBtn(minusX, y, step, step, "-");
   drawOutlineBtn(plusX, y, step, step, "+");
   const int valueW = plusX - (minusX + step);
@@ -1228,7 +1331,6 @@ void uiDrawSettings(const FlashSpace& space) {
   snprintf(dayBuf, sizeof(dayBuf), "%u", clock.valid ? clock.day : 1);
   drawSettingsStepper(g.dayY, "Day", dayBuf, g.rowMinusX, g.rowPlusX);
 
-  drawOutlineBtn(kPad, g.wifiY, kScreenW - 2 * kPad, kActionBtnH, "Wi-Fi transfer");
   drawOutlineBtn(kPad, g.powerY, kScreenW - 2 * kPad, kActionBtnH, "Sleep / power off");
   drawFilledBtn(kPad, g.backY, kScreenW - 2 * kPad, kActionBtnH, "Back");
   canvasDrawString(kPad, g.tipY, "Hold BOOT to sleep. Press to wake.", true, kSmall);
@@ -1274,10 +1376,6 @@ UiHit uiHitSettings(int x, int y) {
   if (hitStepper(g.monthY, UiHit::Kind::MonthMinus, UiHit::Kind::MonthPlus)) return hit;
   if (hitStepper(g.dayY, UiHit::Kind::DayMinus, UiHit::Kind::DayPlus)) return hit;
 
-  if (y >= g.wifiY && y < g.wifiY + kActionBtnH && x >= kPad && x < kScreenW - kPad) {
-    hit.kind = UiHit::Kind::Wifi;
-    return hit;
-  }
   if (y >= g.powerY && y < g.powerY + kActionBtnH && x >= kPad && x < kScreenW - kPad) {
     hit.kind = UiHit::Kind::PowerOff;
     return hit;
@@ -1370,6 +1468,7 @@ void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssi
   };
   line("Status", statusLine);
   line("Network", ssidLine);
+  line("Password", wifiApPassword());
   line("Open in browser", urlLine);
   // Always reserve one detail row so hit-testing matches.
   canvasDrawString(kPad, y, (detailLine && detailLine[0]) ? detailLine : " ", true, kSmall);
@@ -1379,8 +1478,16 @@ void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssi
   if (active && urlLine && urlLine[0]) {
     const int qrSize = 180;
     const int qrTop = y;
-    char wifiPayload[80];
-    snprintf(wifiPayload, sizeof(wifiPayload), "WIFI:T:nopass;S:%s;P:;;", wifiApSsid());
+    char wifiPayload[180];
+    snprintf(wifiPayload, sizeof(wifiPayload), "WIFI:T:WPA;S:%s;P:", wifiApSsid());
+    size_t used = strlen(wifiPayload);
+    for (const char* p = wifiApPassword(); *p && used + 3 < sizeof(wifiPayload); ++p) {
+      if (*p == '\\' || *p == ';' || *p == ',' || *p == ':' || *p == '"') wifiPayload[used++] = '\\';
+      wifiPayload[used++] = *p;
+    }
+    wifiPayload[used++] = ';';
+    wifiPayload[used++] = ';';
+    wifiPayload[used] = 0;
     const int gap = 16;
     const int pairW = qrSize * 2 + gap;
     const int x0 = (kScreenW - pairW) / 2;
@@ -1402,6 +1509,7 @@ void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssi
     y += kActionBtnH + 10;
   };
 
+  placeBtn("Change password", false);
   if (!active) {
     placeBtn("Start hotspot", true);
   } else {
@@ -1425,7 +1533,7 @@ UiHit uiHitWifi(int x, int y, bool active) {
   }
 
   int by = statusBarH() + kPad + canvasTextHeight(kTitle) + 14;
-  by += (canvasTextHeight(kSmall) + 2 + canvasTextHeight(kBody) + 10) * 3;
+  by += (canvasTextHeight(kSmall) + 2 + canvasTextHeight(kBody) + 10) * 4;
   by += canvasTextHeight(kSmall) + 12;
 
   if (active) {
@@ -1444,6 +1552,7 @@ UiHit uiHitWifi(int x, int y, bool active) {
     return false;
   };
 
+  if (hitBtn(UiHit::Kind::WifiChangePass)) return hit;
   if (!active) {
     if (hitBtn(UiHit::Kind::WifiStartAp)) return hit;
   } else {
@@ -1520,18 +1629,31 @@ UiHit uiHitConfirm(int x, int y) {
   return hit;
 }
 
-void uiDrawImageViewHint() {
-  const char* tip = "Tap to close";
-  const int tw = canvasTextWidth(tip, kBody);
-  const int th = canvasTextHeight(kBody);
-  const int boxW = tw + 28;
-  const int boxH = th + 16;
-  const int boxX = (kScreenW - boxW) / 2;
-  const int boxY = kScreenH - boxH - 24;
-  canvasFillRoundRect(boxX - 2, boxY - 2, boxW + 4, boxH + 4, 12, true);
-  canvasFillRoundRect(boxX, boxY, boxW, boxH, 10, false);
-  canvasDrawString(boxX + 14, boxY + 8, tip, true, kBody);
+void imageViewChips(int& closeX, int& setX, int& y, int& w, int& h) {
+  h = 52;
+  w = 168;
+  y = kScreenH - h - 24;
+  const int gap = 16;
+  const int total = w * 2 + gap;
+  closeX = (kScreenW - total) / 2;
+  setX = closeX + w + gap;
+}
+
+void uiDrawImageViewHint(bool saved) {
+  if (canvasHasCapture()) canvasRestoreCapture();
+  int closeX = 0, setX = 0, y = 0, w = 0, h = 0;
+  imageViewChips(closeX, setX, y, w, h);
+  drawChromeOutlineBtn(closeX, y, w, h, "Close");
+  drawFilledBtn(setX, y, w, h, saved ? "Saved" : "Set sleep");
   presentQuality();
+}
+
+UiHit uiHitImageView(int x, int y) {
+  UiHit hit;
+  int closeX = 0, setX = 0, cy = 0, w = 0, h = 0;
+  imageViewChips(closeX, setX, cy, w, h);
+  if (y >= cy && y < cy + h && x >= setX && x < setX + w) hit.kind = UiHit::Kind::SetSleep;
+  return hit;
 }
 
 namespace {
@@ -1960,8 +2082,8 @@ bool hitOsk(int x, int y, bool symbols, bool shift, UiHit& hit) {
 namespace {
 
 void drawTextEditField(const char* text, TextEditMode mode) {
-  const bool nameMode =
-      mode == TextEditMode::Rename || mode == TextEditMode::NewFolder || mode == TextEditMode::NewFile;
+  const bool nameMode = mode == TextEditMode::Rename || mode == TextEditMode::NewFolder ||
+                        mode == TextEditMode::NewFile || mode == TextEditMode::ApPassword;
 
   const int actionY = oskActionBarY();
   const int fieldTop = statusBarH() + kPad + 40;
@@ -1970,10 +2092,10 @@ void drawTextEditField(const char* text, TextEditMode mode) {
   const size_t len = strlen(body);
 
   if (nameMode) {
-    const char* hint =
-        mode == TextEditMode::NewFolder
-            ? "Folder name"
-            : (mode == TextEditMode::NewFile ? "File name" : "New name");
+    const char* hint = "New name";
+    if (mode == TextEditMode::NewFolder) hint = "Folder name";
+    else if (mode == TextEditMode::NewFile) hint = "File name";
+    else if (mode == TextEditMode::ApPassword) hint = "8 to 63 characters";
     // Clear hint + name box (leave keyboard alone).
     const int boxY = fieldTop + 22;
     const int boxH = 56;
@@ -1996,6 +2118,8 @@ void drawTextEditField(const char* text, TextEditMode mode) {
       canvasDrawString(kPad, boxY + boxH + 12, "Then tap Done to create and edit.", true, kSmall);
     } else if (mode == TextEditMode::NewFolder) {
       canvasDrawString(kPad, boxY + boxH + 12, "Then tap Done to create the folder.", true, kSmall);
+    } else if (mode == TextEditMode::ApPassword) {
+      canvasDrawString(kPad, boxY + boxH + 12, "Then tap Done. The hotspot restarts.", true, kSmall);
     }
     return;
   }
@@ -2082,6 +2206,7 @@ void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shif
   if (mode == TextEditMode::NewFolder) heading = "New folder";
   else if (mode == TextEditMode::NewFile) heading = "New file";
   else if (mode == TextEditMode::Rename) heading = "Rename";
+  else if (mode == TextEditMode::ApPassword) heading = "Hotspot password";
   canvasDrawString(kPad, statusBarH() + kPad, heading, true, kTitle);
 
   drawTextEditField(text, mode);

@@ -19,7 +19,7 @@ Pre-built images: **[Releases](https://github.com/nikbasi/basilauncher/releases)
 
 **Easiest install:** open the **[web flasher](https://nikbasi.github.io/basilauncher/flash/)** (Chrome/Edge), plug in the T5 Pro, click **Connect & flash**.
 
-**Wi-Fi transfer (on device):** Settings -> **Wi-Fi transfer** -> **Start hotspot**. Scan the Join Wi-Fi QR (or join open `Basilauncher`), then scan Open page / visit `http://192.168.4.1/`. Browse any SD folder and upload one or more files (e.g. `/firmware` for apps, `/sleep` for `.bmp`/`.jpg` wallpapers).
+**Wi-Fi transfer (on device):** pull down the shade and tap the **Wi-Fi** tile to start the hotspot. Hold the tile for the password and QR. The network is `Basilauncher` with password `basilauncher` until you change it (on the device, or on the transfer page). Scan the Join Wi-Fi QR, then scan Open page / visit `http://192.168.4.1/`. Browse any SD folder and upload one or more files (e.g. `/firmware` for apps, `/sleep` for `.bmp`/`.jpg` wallpapers). The tile and the status-bar icon fill in while the hotspot is on.
 
 | Asset | Offset | When |
 |-------|--------|------|

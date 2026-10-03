@@ -8,3 +8,6 @@ bool wifiServerRunning();
 // Last upload result for the device UI (empty if none).
 const char* wifiServerLastMessage();
 void wifiServerClearMessage();
+
+// True once after the transfer page saves a new hotspot password.
+bool wifiServerTakeApRestart();

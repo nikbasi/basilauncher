@@ -19,7 +19,7 @@ enum class Screen {
 
 enum class ExplorerMode { Browse, Install };
 
-enum class TextEditMode { EditFile, Rename, NewFolder, NewFile };
+enum class TextEditMode { EditFile, Rename, NewFolder, NewFile, ApPassword };
 
 struct UiHit {
   enum class Kind {
@@ -31,8 +31,10 @@ struct UiHit {
     Settings,
     Hardware,
     Wifi,
+    SetSleep,
     WifiStartAp,
     WifiStop,
+    WifiChangePass,
     Back,
     PowerOff,
     SelectEntry,
@@ -123,7 +125,8 @@ void uiRedrawStatusBar(const FlashSpace& space, bool showClosedGrabber);
 void uiDrawProgress(const char* title, int percent);
 void uiDrawMessage(const char* title, const char* body);
 void uiDrawConfirm(const char* title, const char* body);
-void uiDrawImageViewHint();  // overlay tip after BMP drawn
+void uiDrawImageViewHint(bool saved = false);  // Close / Set sleep chips after the photo
+UiHit uiHitImageView(int x, int y);
 void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shift,
                     TextEditMode mode, bool scrub = false);
 // Fast path: rewrite only the text field in the existing framebuffer (keyboard

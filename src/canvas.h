@@ -63,9 +63,21 @@ void canvasDrawLine(int x0, int y0, int x1, int y1, bool black);
 
 // 8x16 ASC16 glyphs, scaled. scale=1 uses the UI text-size setting (body).
 // scale=2 is the title size (also follows the setting).
-void canvasDrawString(int x, int y, const char* text, bool black = true, int scale = 1);
+// bold smears body glyphs one pixel right. Leave it off for scale 2.
+void canvasDrawString(int x, int y, const char* text, bool black = true, int scale = 1, bool bold = false);
 int canvasTextWidth(const char* text, int scale = 1);
 int canvasTextHeight(int scale = 1);
+
+// Copy the current 1-bit frame into PSRAM. The viewer chips are drawn after this,
+// so the copy stays a clean photo. Restore copies it back without freeing it.
+bool canvasCaptureFrame();
+void canvasReleaseCapture();
+bool canvasHasCapture();
+const uint8_t* canvasCapturedFrame();
+size_t canvasCapturedBytes();
+void canvasRestoreCapture();
+// Drop grayscale masks so a restored black/white frame is not composited with old gray.
+void canvasDiscardGray();
 
 // UI text size: 0=Small, 1=Medium (default), 2=Large. Affects scale 1 and 2.
 void canvasSetUiTextSize(int level);

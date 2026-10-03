@@ -11,12 +11,37 @@
 namespace {
 
 constexpr const char* kApSsid = "Basilauncher";
+constexpr const char* kDefaultApPass = "basilauncher";
 constexpr uint8_t kApChannel = 1;
 DNSServer* gDns = nullptr;
 WifiMode gMode = WifiMode::Off;
 char gSavedSsid[33] = {};
 char gSavedPass[65] = {};
+char gApPass[64] = {};
 bool gCredsLoaded = false;
+bool gApLoaded = false;
+
+bool passwordOk(const char* pass) {
+  if (!pass) return false;
+  const size_t n = strlen(pass);
+  if (n < 8 || n > 63) return false;
+  for (size_t i = 0; i < n; ++i) {
+    const unsigned char c = static_cast<unsigned char>(pass[i]);
+    if (c < 0x20 || c > 0x7E) return false;
+  }
+  return true;
+}
+
+void loadApPass() {
+  if (gApLoaded) return;
+  gApLoaded = true;
+  snprintf(gApPass, sizeof(gApPass), "%s", kDefaultApPass);
+  Preferences prefs;
+  if (!prefs.begin("basil", true)) return;
+  const String pass = prefs.getString("apPass", "");
+  prefs.end();
+  if (passwordOk(pass.c_str())) snprintf(gApPass, sizeof(gApPass), "%s", pass.c_str());
+}
 
 void loadCreds() {
   if (gCredsLoaded) return;
@@ -51,6 +76,23 @@ void fillIp(char* out, size_t n, IPAddress ip) {
 
 const char* wifiApSsid() {
   return kApSsid;
+}
+
+const char* wifiApPassword() {
+  loadApPass();
+  return gApPass;
+}
+
+bool wifiSetApPassword(const char* pass) {
+  if (!passwordOk(pass)) return false;
+  snprintf(gApPass, sizeof(gApPass), "%s", pass);
+  gApLoaded = true;
+  Preferences prefs;
+  if (!prefs.begin("basil", false)) return true;
+  prefs.putString("apPass", gApPass);
+  prefs.end();
+  Serial.println("WiFi: hotspot password updated");
+  return true;
 }
 
 bool wifiHasSavedNetwork() {
@@ -102,8 +144,8 @@ bool wifiStartSoftAp() {
     Serial.println("WiFi: softAPConfig failed");
   }
 
-  // Empty password string = open network (more reliable than nullptr on some cores).
-  const bool ok = WiFi.softAP(kApSsid, "", kApChannel, 0, 4);
+  loadApPass();
+  const bool ok = WiFi.softAP(kApSsid, gApPass, kApChannel, 0, 4);
   if (!ok) {
     Serial.println("WiFi: SoftAP failed");
     WiFi.mode(WIFI_OFF);
@@ -184,7 +226,7 @@ WifiStatus wifiGetStatus() {
     // Always advertise the pinned SoftAP address (matches softAPConfig).
     snprintf(st.ip, sizeof(st.ip), "192.168.4.1");
     snprintf(st.url, sizeof(st.url), "http://192.168.4.1/");
-    snprintf(st.detail, sizeof(st.detail), "Open network - join from phone");
+    snprintf(st.detail, sizeof(st.detail), "WPA2 password is on this screen");
   } else if (gMode == WifiMode::Station) {
     st.connected = WiFi.status() == WL_CONNECTED;
     snprintf(st.ssid, sizeof(st.ssid), "%s", WiFi.SSID().c_str());

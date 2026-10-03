@@ -1,5 +1,7 @@
 #include "wifi_server.h"
 
+#include "wifi_session.h"
+
 #include <SD.h>
 #include <WebServer.h>
 #include <cstring>
@@ -12,6 +14,7 @@ char gUploadPath[192] = {};
 char gUploadDir[160] = "/";
 char gLastMsg[96] = {};
 bool gUploadOk = false;
+bool gRestartAp = false;
 
 constexpr char kIndexHtml[] = R"HTML(<!DOCTYPE html>
 <html lang="en">
@@ -54,6 +57,12 @@ button.secondary{background:#eee;color:#222;margin-top:.35rem}
 </form>
 <p id="status" class="muted"></p>
 <p class="muted">Tips: apps go in <code>/firmware</code>. Sleep wallpapers (<code>.bmp</code>, <code>.jpg</code>) go in <code>/sleep</code>.</p>
+</div>
+<div class="card">
+<label>Hotspot password</label>
+<input id="pass" maxlength="63" autocomplete="off" spellcheck="false"/>
+<button type="button" id="savepass" class="secondary">Save password</button>
+<p class="muted">8 to 63 characters. Saving restarts the hotspot. Rejoin with the new password.</p>
 </div>
 <script>
 const dirEl=document.getElementById('dir');
@@ -130,6 +139,16 @@ document.getElementById('form').onsubmit=async e=>{
     :('Saved '+ok+' file'+(ok===1?'':'s'));
   document.getElementById('file').value='';
   refresh();
+};
+document.getElementById('savepass').onclick=async()=>{
+  const pass=document.getElementById('pass').value;
+  statusEl.textContent='Saving password...';
+  try{
+    const r=await fetch('/api/ap-pass',{method:'POST',headers:{'Content-Type':'text/plain'},body:pass});
+    statusEl.textContent=await r.text();
+  }catch(e){
+    statusEl.textContent='If the hotspot dropped, rejoin with the new password.';
+  }
 };
 refresh();
 </script>
@@ -349,6 +368,17 @@ void handleUploadDone() {
   else gServer->send(500, "text/plain", gLastMsg[0] ? gLastMsg : "Upload failed");
 }
 
+void handleApPass() {
+  if (!gServer) return;
+  const String body = gServer->arg("plain");
+  if (!wifiSetApPassword(body.c_str())) {
+    gServer->send(400, "text/plain", "Use 8 to 63 printable characters.");
+    return;
+  }
+  gServer->send(200, "text/plain", "Saved. Rejoin Basilauncher with the new password.");
+  gRestartAp = true;
+}
+
 void handleNotFound() {
   handleRoot();
 }
@@ -375,6 +405,7 @@ bool wifiServerStart() {
   gServer->on("/", HTTP_GET, handleRoot);
   gServer->on("/api/ls", HTTP_GET, handleList);
   gServer->on("/upload", HTTP_POST, handleUploadDone, handleUpload);
+  gServer->on("/api/ap-pass", HTTP_POST, handleApPass);
   // Captive / connectivity checks so phones open a browser to our page.
   gServer->on("/generate_204", HTTP_GET, handleNoContent);
   gServer->on("/gen_204", HTTP_GET, handleNoContent);
@@ -412,4 +443,10 @@ const char* wifiServerLastMessage() {
 
 void wifiServerClearMessage() {
   gLastMsg[0] = 0;
+}
+
+bool wifiServerTakeApRestart() {
+  const bool restart = gRestartAp;
+  gRestartAp = false;
+  return restart;
 }

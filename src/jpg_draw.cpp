@@ -78,9 +78,79 @@ int sampleGray(const uint8_t* img, int srcW, int srcH, int sx, int sy) {
   return img[static_cast<size_t>(sy) * srcW + sx];
 }
 
+// Pull edges back out after the low-pass decode. Amount is half the Laplacian so
+// fur and faces both gain contour without a heavy halo.
+void sharpenGray(uint8_t* img, int w, int h) {
+  if (!img || w < 3 || h < 3) return;
+  auto* prev = static_cast<uint8_t*>(allocBuf(static_cast<size_t>(w)));
+  auto* cur = static_cast<uint8_t*>(allocBuf(static_cast<size_t>(w)));
+  if (!prev || !cur) {
+    free(prev);
+    free(cur);
+    return;
+  }
+  memcpy(prev, img, static_cast<size_t>(w));
+  for (int y = 1; y < h - 1; ++y) {
+    if ((y & 31) == 0) feedWatchdog();
+    memcpy(cur, img + static_cast<size_t>(y) * w, static_cast<size_t>(w));
+    uint8_t* dst = img + static_cast<size_t>(y) * w;
+    const uint8_t* down = img + static_cast<size_t>(y + 1) * w;
+    for (int x = 1; x < w - 1; ++x) {
+      const int avg = (cur[x - 1] + cur[x + 1] + prev[x] + down[x]) / 4;
+      int v = cur[x] + (cur[x] - avg) / 2;
+      if (v < 0) v = 0;
+      if (v > 255) v = 255;
+      dst[x] = static_cast<uint8_t>(v);
+    }
+    memcpy(prev, cur, static_cast<size_t>(w));
+  }
+  free(prev);
+  free(cur);
+}
+
+void ditherScreen(const uint8_t* img) {
+  canvasClear();
+  auto* errA = static_cast<int*>(calloc(static_cast<size_t>(kScreenW + 2), sizeof(int)));
+  auto* errB = static_cast<int*>(calloc(static_cast<size_t>(kScreenW + 2), sizeof(int)));
+  int* cur = errA;
+  int* nxt = errB;
+  for (int dy = 0; dy < kScreenH; ++dy) {
+    if ((dy & 3) == 0) feedWatchdog();
+    const uint8_t* row = img + static_cast<size_t>(dy) * kScreenW;
+    if (nxt) memset(nxt, 0, static_cast<size_t>(kScreenW + 2) * sizeof(int));
+    for (int dx = 0; dx < kScreenW; ++dx) {
+      int lum = row[dx];
+      if (cur) lum += cur[dx + 1];
+      if (lum < 0) lum = 0;
+      if (lum > 255) lum = 255;
+      const bool black = lum < 128;
+      canvasSetPixel(dx, dy, black);
+      if (cur && nxt) {
+        const int err = lum - (black ? 0 : 255);
+        cur[dx + 2] += (err * 7) / 16;
+        nxt[dx] += (err * 3) / 16;
+        nxt[dx + 1] += (err * 5) / 16;
+        nxt[dx + 2] += (err * 1) / 16;
+      }
+    }
+    if (cur && nxt) {
+      int* tmp = cur;
+      cur = nxt;
+      nxt = tmp;
+    }
+  }
+  free(errA);
+  free(errB);
+}
+
 // Scale the grayscale image to cover the panel (crop the longer axis), then dither.
-void ditherGrayToCanvas(const uint8_t* img, int srcW, int srcH) {
+void ditherGrayToCanvas(uint8_t* img, int srcW, int srcH) {
   if (!img || srcW < 1 || srcH < 1) return;
+  sharpenGray(img, srcW, srcH);
+  if (srcW == kScreenW && srcH == kScreenH) {
+    ditherScreen(img);
+    return;
+  }
   canvasClear();
 
   int cropX = 0, cropY = 0, cropW = srcW, cropH = srcH;
@@ -301,6 +371,675 @@ void buildProgHuff(ProgHuff& t) {
     code = static_cast<uint16_t>(code << 1);
   }
   t.ready = true;
+}
+
+// 4x4 keeps sixteen low-frequency terms (about twice the linear detail of 2x2).
+// AC values are stored in int8 so a 12 MP photo still fits in PSRAM; DC stays int16.
+int gStoreStride = 4;
+uint32_t gLumaBlocks = 0;
+
+int coefSlot(int k) {
+  if (gStoreStride != 16) {
+    if (k == 0) return 0;
+    if (k == 1) return 1;
+    if (k == 2) return 2;
+    if (k == 4) return 3;
+    return -1;
+  }
+  // Zigzag index → slot in the 4x4 natural block (v * 4 + u). -1 = not stored.
+  static constexpr int8_t kMap[25] = {0,  1,  4,  8,  5,  2,  3,  6,  9,  12, -1, 13, 10,
+                                      7,  -1, -1, 14, 11, -1, -1, -1, -1, -1, -1, 15};
+  if (k < 0 || k >= 25) return -1;
+  return kMap[k];
+}
+
+bool readBytes(ProgJpeg& pj, uint8_t* dst, uint32_t n) {
+  for (uint32_t i = 0; i < n; ++i) {
+    const int b = pj.rawByte();
+    if (b < 0) return false;
+    if (dst) dst[i] = static_cast<uint8_t>(b);
+  }
+  return true;
+}
+
+int nextMarker(ProgJpeg& pj) {
+  int b = pj.rawByte();
+  while (b == 0xFF) b = pj.rawByte();
+  return b;
+}
+
+int unsignedBits(ProgJpeg& pj, int n) {
+  int v = 0;
+  for (int i = 0; i < n; ++i) {
+    const int b = pj.nextBit();
+    if (b < 0) return -1;
+    v = (v << 1) | b;
+  }
+  return v;
+}
+
+bool isNz(const uint8_t* nz, uint32_t bi, int k) {
+  return (nz[bi * 8 + (k >> 3)] >> (k & 7)) & 1;
+}
+
+void setNz(uint8_t* nz, uint32_t bi, int k) {
+  nz[bi * 8 + (k >> 3)] |= static_cast<uint8_t>(1u << (k & 7));
+}
+
+void setCoef(int16_t* coefs, uint32_t bi, int k, int val) {
+  const int slot = coefSlot(k);
+  if (slot < 0 || !coefs) return;
+  if (val > 32767) val = 32767;
+  if (val < -32768) val = -32768;
+  if (gStoreStride != 16) {
+    coefs[bi * 4 + slot] = static_cast<int16_t>(val);
+    return;
+  }
+  if (slot == 0) {
+    coefs[bi] = static_cast<int16_t>(val);
+    return;
+  }
+  int v = val;
+  if (v > 127) v = 127;
+  if (v < -128) v = -128;
+  reinterpret_cast<int8_t*>(coefs + gLumaBlocks)[bi * 15 + (slot - 1)] = static_cast<int8_t>(v);
+}
+
+int getCoef(const int16_t* coefs, uint32_t bi, int k) {
+  const int slot = coefSlot(k);
+  if (slot < 0 || !coefs) return 0;
+  if (gStoreStride != 16) return coefs[bi * 4 + slot];
+  if (slot == 0) return coefs[bi];
+  return reinterpret_cast<const int8_t*>(coefs + gLumaBlocks)[bi * 15 + (slot - 1)];
+}
+
+bool refineBit(ProgJpeg& pj, uint8_t* nz, int16_t* coefs, uint32_t bi, int k, int al, bool store) {
+  const int b = pj.nextBit();
+  if (b < 0) return false;
+  if (!b || !store) return true;
+  const int p1 = 1 << al;
+  const int c = getCoef(coefs, bi, k);
+  if ((c & p1) == 0) setCoef(coefs, bi, k, c + (c >= 0 ? p1 : -p1));
+  (void)nz;
+  return true;
+}
+
+bool acFirst(ProgJpeg& pj, const ProgHuff& table, uint8_t* nz, int16_t* coefs, uint32_t bi, int ss, int se,
+             int al, bool store, uint32_t& eobrun) {
+  if (eobrun) {
+    --eobrun;
+    return true;
+  }
+  int k = ss;
+  while (k <= se) {
+    const int rs = pj.decodeHuff(table);
+    if (rs < 0) return false;
+    const int sbits = rs & 15;
+    const int run = rs >> 4;
+    if (sbits) {
+      k += run;
+      if (k > se) return false;
+      bool ok = true;
+      int val = static_cast<int>(pj.receiveExtend(sbits, &ok));
+      if (!ok) return false;
+      val <<= al;
+      setNz(nz, bi, k);
+      if (store) setCoef(coefs, bi, k, val);
+    } else if (run == 15) {
+      k += 15;
+    } else {
+      eobrun = 1u << run;
+      if (run) {
+        const int extra = unsignedBits(pj, run);
+        if (extra < 0) return false;
+        eobrun += static_cast<uint32_t>(extra);
+      }
+      --eobrun;
+      break;
+    }
+    ++k;
+  }
+  return true;
+}
+
+bool acRefine(ProgJpeg& pj, const ProgHuff& table, uint8_t* nz, int16_t* coefs, uint32_t bi, int ss, int se,
+              int al, bool store, uint32_t& eobrun) {
+  const int p1 = 1 << al;
+  int k = ss;
+  if (eobrun == 0) {
+    while (k <= se) {
+      const int rs = pj.decodeHuff(table);
+      if (rs < 0) return false;
+      int rr = rs >> 4;
+      int s = rs & 15;
+      if (s) {
+        if (s != 1) return false;
+        const int sb = pj.nextBit();
+        if (sb < 0) return false;
+        s = sb ? p1 : -p1;
+      } else if (rr != 15) {
+        eobrun = 1u << rr;
+        if (rr) {
+          const int extra = unsignedBits(pj, rr);
+          if (extra < 0) return false;
+          eobrun += static_cast<uint32_t>(extra);
+        }
+        break;
+      }
+      for (;;) {
+        if (isNz(nz, bi, k)) {
+          if (!refineBit(pj, nz, coefs, bi, k, al, store)) return false;
+        } else {
+          --rr;
+          if (rr < 0) break;
+        }
+        ++k;
+        if (k > se) break;
+      }
+      if (s) {
+        if (k > 63) return false;
+        setNz(nz, bi, k);
+        if (store) setCoef(coefs, bi, k, s);
+      }
+      ++k;
+    }
+  }
+  if (eobrun > 0) {
+    while (k <= se) {
+      if (isNz(nz, bi, k)) {
+        if (!refineBit(pj, nz, coefs, bi, k, al, store)) return false;
+      }
+      ++k;
+    }
+    --eobrun;
+  }
+  return true;
+}
+
+// Natural-order slot → JPEG zigzag index, for the 4x4 low-frequency block.
+constexpr uint8_t kSlotZz[16] = {0, 1, 5, 6, 2, 4, 7, 13, 3, 8, 12, 17, 9, 11, 16, 24};
+
+// Cosine basis for sample positions 1,3,5,7 and frequencies 0..3, Q14, DC scaled by 1/sqrt(2).
+constexpr int kBasis[4][4] = {
+    {11585, 13623, 6270, -3196},
+    {11585, 3196, -15137, -9102},
+    {11585, -9102, -6270, 16069},
+    {11585, -16069, 15137, -13623},
+};
+
+int idct4(const int* f, int xi, int yi) {
+  int64_t sum = 0;
+  for (int v = 0; v < 4; ++v) {
+    for (int u = 0; u < 4; ++u) {
+      sum += static_cast<int64_t>(kBasis[yi][v]) * kBasis[xi][u] * f[v * 4 + u];
+    }
+  }
+  sum >>= 28;
+  return static_cast<int>(sum / 4);
+}
+
+int idctQuad(int c00, int c01, int c10, int c11, int xs, int ys) {
+  constexpr int kA0 = 11585;
+  constexpr int kA1 = 9102;
+  const int ax = xs * kA1;
+  const int ay = ys * kA1;
+  int64_t sum = static_cast<int64_t>(c00) * kA0 * kA0;
+  sum += static_cast<int64_t>(c01) * kA0 * ay;
+  sum += static_cast<int64_t>(c10) * ax * kA0;
+  sum += static_cast<int64_t>(c11) * ax * ay;
+  sum >>= 28;
+  return static_cast<int>(sum / 4);
+}
+
+struct SharpJpeg {
+  ProgJpeg pj;
+  ProgHuff* dcTables = nullptr;
+  ProgHuff* acTables = nullptr;
+  uint16_t quant[4][64] = {};
+  struct Comp {
+    uint8_t id = 0, h = 1, v = 1, tq = 0, td = 0, ta = 0;
+  } comps[4];
+  uint8_t ncomp = 0;
+  uint16_t width = 0, height = 0, restartInterval = 0;
+  uint16_t mcusX = 0, mcusY = 0, blocksW = 0, blocksH = 0, padW = 0;
+  uint8_t sampleN = 2;
+  int16_t* coefs = nullptr;
+  uint8_t* nz[4] = {};
+  uint32_t nzBlocks[4] = {};
+  int32_t pred[4] = {};
+  uint32_t eobrun = 0;
+};
+
+void freeSharp(SharpJpeg& st) {
+  free(st.dcTables);
+  free(st.acTables);
+  free(st.coefs);
+  for (int i = 0; i < 4; ++i) free(st.nz[i]);
+  st.dcTables = nullptr;
+  st.acTables = nullptr;
+  st.coefs = nullptr;
+  for (int i = 0; i < 4; ++i) st.nz[i] = nullptr;
+  gStoreStride = 4;
+  gLumaBlocks = 0;
+}
+
+bool allocSharp(SharpJpeg& st) {
+  uint8_t hmax = 1, vmax = 1;
+  for (uint8_t c = 0; c < st.ncomp; ++c) {
+    if (st.comps[c].h > hmax) hmax = st.comps[c].h;
+    if (st.comps[c].v > vmax) vmax = st.comps[c].v;
+  }
+  st.mcusX = static_cast<uint16_t>((st.width + 8 * hmax - 1) / (8 * hmax));
+  st.mcusY = static_cast<uint16_t>((st.height + 8 * vmax - 1) / (8 * vmax));
+  st.blocksW = static_cast<uint16_t>((st.width + 7) / 8);
+  st.blocksH = static_cast<uint16_t>((st.height + 7) / 8);
+  st.padW = static_cast<uint16_t>(st.mcusX * st.comps[0].h);
+  const uint32_t lumaBlocks = static_cast<uint32_t>(st.padW) * (st.mcusY * st.comps[0].v);
+  gLumaBlocks = lumaBlocks;
+  size_t nzBytes = 0;
+  uint32_t blocks[4] = {};
+  for (uint8_t c = 0; c < st.ncomp; ++c) {
+    blocks[c] = static_cast<uint32_t>(st.mcusX * st.comps[c].h) * (st.mcusY * st.comps[c].v);
+    nzBytes += static_cast<size_t>(blocks[c]) * 8;
+  }
+  // int16 DC + 15 int8 AC coefficients per luma block.
+  const size_t coefWide = static_cast<size_t>(lumaBlocks) * (sizeof(int16_t) + 15);
+  const size_t coefNarrow = static_cast<size_t>(lumaBlocks) * 4 * sizeof(int16_t);
+  gStoreStride = 4;
+  st.sampleN = 2;
+  if (coefWide + nzBytes <= 6 * 1024 * 1024) {
+    st.coefs = static_cast<int16_t*>(allocBuf(coefWide));
+    if (st.coefs) {
+      memset(st.coefs, 0, coefWide);
+      gStoreStride = 16;
+      st.sampleN = 4;
+    }
+  }
+  if (!st.coefs) {
+    if (coefNarrow + nzBytes > 5 * 1024 * 1024) return false;
+    st.coefs = static_cast<int16_t*>(allocBuf(coefNarrow));
+    if (!st.coefs) return false;
+    memset(st.coefs, 0, coefNarrow);
+    gStoreStride = 4;
+    st.sampleN = 2;
+  }
+  for (uint8_t c = 0; c < st.ncomp; ++c) {
+    st.nzBlocks[c] = blocks[c];
+    st.nz[c] = static_cast<uint8_t*>(allocBuf(static_cast<size_t>(blocks[c]) * 8));
+    if (!st.nz[c]) return false;
+    memset(st.nz[c], 0, static_cast<size_t>(blocks[c]) * 8);
+  }
+  return true;
+}
+
+bool runSharpScan(SharpJpeg& st, const uint8_t* scanComp, uint8_t ns, int ss, int se, int ah, int al,
+                  JpgAbortCheck abortCheck) {
+  st.eobrun = 0;
+  const bool interleaved = ns > 1;
+  uint32_t rows = 0, cols = 0;
+  if (interleaved) {
+    rows = st.mcusY;
+    cols = st.mcusX;
+  } else {
+    const auto& comp = st.comps[scanComp[0]];
+    rows = static_cast<uint32_t>(st.mcusY) * comp.v;
+    cols = static_cast<uint32_t>(st.mcusX) * comp.h;
+  }
+  uint32_t since = 0;
+  for (uint32_t ry = 0; ry < rows; ++ry) {
+    if ((ry & 1) == 0) {
+      feedWatchdog();
+      if (abortCheck && abortCheck()) return false;
+    }
+    for (uint32_t cx = 0; cx < cols; ++cx) {
+      if (st.restartInterval && since == st.restartInterval) {
+        st.pj.bitCount = 0;
+        int mk = st.pj.pendingMarker;
+        st.pj.pendingMarker = 0;
+        if (mk == 0) mk = nextMarker(st.pj);
+        if (mk < 0xD0 || mk > 0xD7) return false;
+        st.pred[0] = st.pred[1] = st.pred[2] = st.pred[3] = 0;
+        st.eobrun = 0;
+        since = 0;
+      }
+      const uint8_t nsc = interleaved ? ns : 1;
+      for (uint8_t sci = 0; sci < nsc; ++sci) {
+        const uint8_t ci = scanComp[sci];
+        const auto& comp = st.comps[ci];
+        const uint8_t bh = interleaved ? comp.h : 1;
+        const uint8_t bv = interleaved ? comp.v : 1;
+        const uint32_t stride = static_cast<uint32_t>(st.mcusX) * comp.h;
+        const bool store = ci == 0;
+        for (uint8_t by = 0; by < bv; ++by) {
+          for (uint8_t bx = 0; bx < bh; ++bx) {
+            const uint32_t px = interleaved ? cx * comp.h + bx : cx;
+            const uint32_t py = interleaved ? ry * comp.v + by : ry;
+            const uint32_t bi = py * stride + px;
+            if (bi >= st.nzBlocks[ci]) return false;
+            bool ok = false;
+            if (ss == 0 && se == 0) {
+              if (ah == 0) {
+                if (!st.dcTables[comp.td].ready) return false;
+                const int t = st.pj.decodeHuff(st.dcTables[comp.td]);
+                if (t < 0 || t > 15) return false;
+                bool extOk = true;
+                const int diff = t ? static_cast<int>(st.pj.receiveExtend(t, &extOk)) : 0;
+                if (!extOk) return false;
+                st.pred[ci] += diff;
+                const int val = st.pred[ci] << al;
+                if (val) setNz(st.nz[ci], bi, 0);
+                if (store) setCoef(st.coefs, bi, 0, val);
+                ok = true;
+              } else {
+                const int b = st.pj.nextBit();
+                if (b < 0) return false;
+                if (store && b) {
+                  const int p1 = 1 << al;
+                  const int c = getCoef(st.coefs, bi, 0);
+                  setCoef(st.coefs, bi, 0, c | p1);
+                }
+                ok = true;
+              }
+            } else if (ah == 0) {
+              if (!st.acTables[comp.ta].ready) return false;
+              ok = acFirst(st.pj, st.acTables[comp.ta], st.nz[ci], st.coefs, bi, ss, se, al, store, st.eobrun);
+            } else {
+              if (!st.acTables[comp.ta].ready) return false;
+              ok = acRefine(st.pj, st.acTables[comp.ta], st.nz[ci], st.coefs, bi, ss, se, al, store, st.eobrun);
+            }
+            if (!ok) return false;
+          }
+        }
+      }
+      ++since;
+    }
+  }
+  st.pj.bitCount = 0;
+  return true;
+}
+
+bool renderSharp(SharpJpeg& st) {
+  const int n = st.sampleN == 4 ? 4 : 2;
+  const int srcW = st.blocksW * n;
+  const int srcH = st.blocksH * n;
+  if (srcW < 2 || srcH < 2) return false;
+
+  // Nonzero maps are only needed while reading the file.
+  for (int i = 0; i < 4; ++i) {
+    free(st.nz[i]);
+    st.nz[i] = nullptr;
+  }
+
+  int cropX = 0, cropY = 0, cropW = srcW, cropH = srcH;
+  if (static_cast<int64_t>(srcW) * kScreenH > static_cast<int64_t>(srcH) * kScreenW) {
+    cropW = static_cast<int>((static_cast<int64_t>(srcH) * kScreenW + kScreenH / 2) / kScreenH);
+    if (cropW < 1) cropW = 1;
+    if (cropW > srcW) cropW = srcW;
+    cropX = (srcW - cropW) / 2;
+  } else {
+    cropH = static_cast<int>((static_cast<int64_t>(srcW) * kScreenH + kScreenW / 2) / kScreenW);
+    if (cropH < 1) cropH = 1;
+    if (cropH > srcH) cropH = srcH;
+    cropY = (srcH - cropH) / 2;
+  }
+
+  const size_t pixels = static_cast<size_t>(kScreenW) * kScreenH;
+  auto* sum = static_cast<uint16_t*>(allocBuf(pixels * sizeof(uint16_t)));
+  auto* cnt = static_cast<uint8_t*>(allocBuf(pixels));
+  if (!sum || !cnt) {
+    free(sum);
+    free(cnt);
+    return false;
+  }
+  memset(sum, 0, pixels * sizeof(uint16_t));
+  memset(cnt, 0, pixels);
+
+  const uint16_t* qt = st.quant[st.comps[0].tq];
+  const int x0 = cropX / n;
+  const int x1 = (cropX + cropW + n - 1) / n;
+  const int y0 = cropY / n;
+  const int y1 = (cropY + cropH + n - 1) / n;
+  for (int by = y0; by < y1 && by < st.blocksH; ++by) {
+    if ((by & 3) == 0) feedWatchdog();
+    for (int bx = x0; bx < x1 && bx < st.blocksW; ++bx) {
+      const uint32_t bi = static_cast<uint32_t>(by) * st.padW + bx;
+      uint8_t pix[16];
+      if (n == 4) {
+        int f[16];
+        for (int s = 0; s < 16; ++s) f[s] = getCoef(st.coefs, bi, kSlotZz[s]) * qt[kSlotZz[s]];
+        for (int yi = 0; yi < 4; ++yi) {
+          for (int xi = 0; xi < 4; ++xi) {
+            int g = idct4(f, xi, yi) + 128;
+            if (g < 0) g = 0;
+            if (g > 255) g = 255;
+            pix[yi * 4 + xi] = static_cast<uint8_t>(g);
+          }
+        }
+      } else {
+        const int c00 = getCoef(st.coefs, bi, 0) * qt[0];
+        const int c01 = getCoef(st.coefs, bi, 1) * qt[1];
+        const int c10 = getCoef(st.coefs, bi, 2) * qt[2];
+        const int c11 = getCoef(st.coefs, bi, 4) * qt[4];
+        const int samples[4] = {
+            idctQuad(c00, c01, c10, c11, +1, +1), idctQuad(c00, c01, c10, c11, -1, +1),
+            idctQuad(c00, c01, c10, c11, +1, -1), idctQuad(c00, c01, c10, c11, -1, -1)};
+        for (int i = 0; i < 4; ++i) {
+          int g = samples[i] + 128;
+          if (g < 0) g = 0;
+          if (g > 255) g = 255;
+          pix[i] = static_cast<uint8_t>(g);
+        }
+      }
+      for (int dy = 0; dy < n; ++dy) {
+        const int sy = by * n + dy;
+        if (sy < cropY || sy >= cropY + cropH) continue;
+        const int screenY = static_cast<int>((static_cast<int64_t>(sy - cropY) * kScreenH) / cropH);
+        if (screenY < 0 || screenY >= kScreenH) continue;
+        for (int dx = 0; dx < n; ++dx) {
+          const int sx = bx * n + dx;
+          if (sx < cropX || sx >= cropX + cropW) continue;
+          const int screenX = static_cast<int>((static_cast<int64_t>(sx - cropX) * kScreenW) / cropW);
+          if (screenX < 0 || screenX >= kScreenW) continue;
+          const size_t i = static_cast<size_t>(screenY) * kScreenW + screenX;
+          const int sample = n == 4 ? pix[dy * 4 + dx] : pix[dy * 2 + dx];
+          sum[i] = static_cast<uint16_t>(sum[i] + sample);
+          if (cnt[i] != 255) ++cnt[i];
+        }
+      }
+    }
+  }
+  feedWatchdog();
+
+  auto* gray = static_cast<uint8_t*>(allocBuf(pixels));
+  if (!gray) {
+    free(sum);
+    free(cnt);
+    return false;
+  }
+  for (size_t i = 0; i < pixels; ++i) gray[i] = cnt[i] ? static_cast<uint8_t>(sum[i] / cnt[i]) : 255;
+  free(sum);
+  free(cnt);
+  free(st.coefs);
+  st.coefs = nullptr;
+
+  sharpenGray(gray, kScreenW, kScreenH);
+  ditherScreen(gray);
+  free(gray);
+  return true;
+}
+
+// Returns the marker that followed the scan, or -1.
+int decodeSharpScan(SharpJpeg& st, uint32_t segLen, JpgAbortCheck abortCheck) {
+  uint8_t nsB = 0;
+  if (!readBytes(st.pj, &nsB, 1) || nsB == 0 || nsB > 4 || segLen != 1u + nsB * 2u + 3u) return -1;
+  uint8_t scanComp[4] = {};
+  for (uint8_t i = 0; i < nsB; ++i) {
+    uint8_t sc[2];
+    if (!readBytes(st.pj, sc, 2)) return -1;
+    uint8_t idx = 0xFF;
+    for (uint8_t c = 0; c < st.ncomp; ++c) {
+      if (st.comps[c].id == sc[0]) idx = c;
+    }
+    if (idx == 0xFF) return -1;
+    st.comps[idx].td = sc[1] >> 4;
+    st.comps[idx].ta = sc[1] & 0x0F;
+    scanComp[i] = idx;
+  }
+  uint8_t prog[3];
+  if (!readBytes(st.pj, prog, 3)) return -1;
+  const int ss = prog[0];
+  const int se = prog[1];
+  const int ah = prog[2] >> 4;
+  const int al = prog[2] & 0x0F;
+  if (ss > se || se > 63) return -1;
+  if (!runSharpScan(st, scanComp, nsB, ss, se, ah, al, abortCheck)) return -1;
+  int mk = st.pj.pendingMarker;
+  st.pj.pendingMarker = 0;
+  if (mk == 0) mk = nextMarker(st.pj);
+  return mk;
+}
+
+bool decodeProgressiveSharp(File& file, JpgAbortCheck abortCheck) {
+  file.seek(0);
+  SharpJpeg st;
+  st.pj.file = &file;
+  for (auto& row : st.quant) {
+    for (uint16_t& q : row) q = 1;
+  }
+  st.dcTables = static_cast<ProgHuff*>(calloc(4, sizeof(ProgHuff)));
+  st.acTables = static_cast<ProgHuff*>(calloc(4, sizeof(ProgHuff)));
+  if (!st.dcTables || !st.acTables) {
+    freeSharp(st);
+    return false;
+  }
+  uint8_t hdr[2];
+  if (!readBytes(st.pj, hdr, 2) || hdr[0] != 0xFF || hdr[1] != 0xD8) {
+    freeSharp(st);
+    return false;
+  }
+
+  int marker = nextMarker(st.pj);
+  bool ready = false;
+  while (marker != 0xD9 && marker >= 0) {
+    if (marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
+      marker = nextMarker(st.pj);
+      continue;
+    }
+    uint8_t lenB[2];
+    if (!readBytes(st.pj, lenB, 2)) break;
+    uint32_t segLen = (static_cast<uint32_t>(lenB[0]) << 8 | lenB[1]);
+    if (segLen < 2) break;
+    segLen -= 2;
+    if (marker == 0xDA) {
+      if (!ready) break;
+      marker = decodeSharpScan(st, segLen, abortCheck);
+      if (marker < 0) break;
+      continue;
+    }
+    if (marker == 0xDB) {
+      while (segLen > 0) {
+        uint8_t pqtq = 0;
+        if (!readBytes(st.pj, &pqtq, 1)) {
+          marker = -1;
+          break;
+        }
+        const uint8_t pq = pqtq >> 4;
+        const uint8_t tq = pqtq & 0x0F;
+        const uint32_t n = pq ? 128u : 64u;
+        if (segLen < 1 + n || tq > 3) {
+          marker = -1;
+          break;
+        }
+        uint8_t vals[128];
+        if (!readBytes(st.pj, vals, n)) {
+          marker = -1;
+          break;
+        }
+        if (pq) {
+          for (int i = 0; i < 64; ++i) st.quant[tq][i] = static_cast<uint16_t>((vals[2 * i] << 8) | vals[2 * i + 1]);
+        } else {
+          for (int i = 0; i < 64; ++i) st.quant[tq][i] = vals[i];
+        }
+        segLen -= 1 + n;
+      }
+      if (marker < 0) break;
+    } else if (marker == 0xC4) {
+      while (segLen > 0) {
+        uint8_t tcth = 0;
+        if (!readBytes(st.pj, &tcth, 1)) {
+          marker = -1;
+          break;
+        }
+        const uint8_t tc = tcth >> 4;
+        const uint8_t th = tcth & 0x0F;
+        uint8_t counts[16];
+        if (segLen < 17 || th > 3 || !readBytes(st.pj, counts, 16)) {
+          marker = -1;
+          break;
+        }
+        uint32_t total = 0;
+        for (int i = 0; i < 16; ++i) total += counts[i];
+        if (total > 256 || segLen < 17 + total) {
+          marker = -1;
+          break;
+        }
+        uint8_t symbols[256];
+        if (!readBytes(st.pj, symbols, total)) {
+          marker = -1;
+          break;
+        }
+        ProgHuff& table = tc == 0 ? st.dcTables[th] : st.acTables[th];
+        memset(&table, 0, sizeof(table));
+        for (int i = 0; i < 16; ++i) table.counts[i + 1] = counts[i];
+        memcpy(table.symbols, symbols, total);
+        buildProgHuff(table);
+        segLen -= 17 + total;
+      }
+      if (marker < 0) break;
+    } else if (marker == 0xC2) {
+      uint8_t sof[6];
+      if (segLen < 6 || !readBytes(st.pj, sof, 6)) break;
+      st.height = static_cast<uint16_t>((sof[1] << 8) | sof[2]);
+      st.width = static_cast<uint16_t>((sof[3] << 8) | sof[4]);
+      st.ncomp = sof[5];
+      if (st.ncomp == 0 || st.ncomp > 4 || st.width == 0 || st.height == 0 || st.width > 8000 || st.height > 8000 ||
+          segLen != 6u + st.ncomp * 3u) {
+        break;
+      }
+      bool bad = false;
+      for (uint8_t c = 0; c < st.ncomp; ++c) {
+        uint8_t cc[3];
+        if (!readBytes(st.pj, cc, 3)) {
+          bad = true;
+          break;
+        }
+        st.comps[c].id = cc[0];
+        st.comps[c].h = cc[1] >> 4;
+        st.comps[c].v = cc[1] & 0x0F;
+        st.comps[c].tq = cc[2] & 0x03;
+        if (st.comps[c].h == 0 || st.comps[c].v == 0 || st.comps[c].h > 4 || st.comps[c].v > 4) bad = true;
+      }
+      if (bad || !allocSharp(st)) break;
+      ready = true;
+    } else if (marker == 0xDD) {
+      uint8_t d[2];
+      if (segLen != 2 || !readBytes(st.pj, d, 2)) break;
+      st.restartInterval = static_cast<uint16_t>((d[0] << 8) | d[1]);
+    } else if (marker == 0xC0 || marker == 0xC1) {
+      break;
+    } else {
+      if (!readBytes(st.pj, nullptr, segLen)) break;
+    }
+    marker = nextMarker(st.pj);
+  }
+
+  const bool ok = marker == 0xD9 && ready && renderSharp(st);
+  if (ok) {
+    Serial.printf("JPEG: sharp %dx%d from %ux%u\n", st.blocksW * st.sampleN, st.blocksH * st.sampleN, st.width,
+                  st.height);
+  }
+  freeSharp(st);
+  return ok;
 }
 
 bool decodeProgressiveDc(File& file, JpgAbortCheck abortCheck) {
@@ -582,7 +1321,12 @@ bool jpgDrawFile(const char* path, JpgAbortCheck abortCheck) {
     gJpeg.close();
     gJpegFile = SD.open(path, FILE_READ);
     if (!gJpegFile) return false;
-    const bool ok = decodeProgressiveDc(gJpegFile, abortCheck);
+    bool ok = decodeProgressiveSharp(gJpegFile, abortCheck);
+    if (!ok && !(abortCheck && abortCheck())) {
+      Serial.println("JPEG: sharp decode failed, using preview");
+      gJpegFile.seek(0);
+      ok = decodeProgressiveDc(gJpegFile, abortCheck);
+    }
     gJpegFile.close();
     return ok;
   }
