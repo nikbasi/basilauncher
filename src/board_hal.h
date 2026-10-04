@@ -70,11 +70,16 @@ bool boardSetClock(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint
 
 int boardBrightness();          // 0..100 saved level
 bool boardFrontlightOn();
-void boardSetBrightness(int percent);  // also turns on if >0
+void boardSetBrightness(int percent);     // apply and save; turns on if >0
+void boardPreviewBrightness(int percent); // PWM only; save with boardCommitBrightness
+void boardCommitBrightness();
 void boardSetFrontlightOn(bool on);
 bool boardHasFrontlight();
 
 bool boardSdOk();
+
+// Baud that answered during the one-time radio probe. 9600 until then.
+uint32_t boardGpsBaud();
 
 // Call once per loop before poll helpers.
 void boardInputUpdate();

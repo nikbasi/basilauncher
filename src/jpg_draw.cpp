@@ -1335,3 +1335,37 @@ bool jpgDrawFile(const char* path, JpgAbortCheck abortCheck) {
   const int opts = pickScaleOptions(srcW, srcH, false, outW, outH);
   return decodeIntoCanvas(opts, outW, outH, abortCheck);
 }
+
+bool jpgReadGray(const char* path, uint8_t* gray, int width, int height) {
+  if (!path || !gray || width <= 0 || height <= 0) return false;
+  if (gJpegFile) gJpegFile.close();
+  gJpegFile = SD.open(path, FILE_READ);
+  if (!gJpegFile) return false;
+  if (!gJpeg.open(gJpegFile, jpegDrawBlock)) {
+    gJpegFile.close();
+    return false;
+  }
+  const int srcW = gJpeg.getWidth();
+  const int srcH = gJpeg.getHeight();
+  const bool progressive = gJpeg.getJPEGType() == JPEG_MODE_PROGRESSIVE;
+  if (progressive || srcW <= 0 || srcH <= 0 || srcW > width || srcH > height) {
+    gJpeg.close();
+    if (gJpegFile) gJpegFile.close();
+    return false;
+  }
+  memset(gray, 0xFF, static_cast<size_t>(width) * static_cast<size_t>(height));
+  JpgOut out;
+  out.img = gray;
+  out.width = width;
+  out.height = height;
+  gOut = &out;
+  gJpeg.setPixelType(EIGHT_BIT_GRAYSCALE);
+  gJpeg.setMaxOutputSize(8);
+  feedWatchdog();
+  const int ok = gJpeg.decode(0, 0, 0);
+  feedWatchdog();
+  gOut = nullptr;
+  gJpeg.close();
+  if (gJpegFile) gJpegFile.close();
+  return ok != 0;
+}

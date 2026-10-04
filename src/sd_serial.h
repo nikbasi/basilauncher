@@ -1,6 +1,6 @@
 #pragma once
 
-// Host protocol over USB CDC Serial (115200+). Paths must be under /firmware/.
+// Host protocol over USB CDC Serial (115200+). Paths must be under /firmware/, /sleep/, or /maps/.
 //
 //   BASI\n                 -> BASI OK <version>\n
 //   MKDIR /firmware\n      -> OK\n | ERR ...

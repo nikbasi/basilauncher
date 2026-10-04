@@ -421,8 +421,11 @@ bool readUbxMonVer(char* out, size_t outLen, uint32_t timeoutMs) {
   return false;
 }
 
+uint32_t gGpsBaud = 9600;
+
 void identifyGps(char* out, size_t outLen) {
   snprintf(out, outLen, "not detected");
+  gGpsBaud = 9600;
   Serial1.begin(9600, SERIAL_8N1, T5S3_GPS_RXD, T5S3_GPS_TXD);
   delay(250);
   while (Serial1.available() > 0) Serial1.read();
@@ -451,6 +454,7 @@ void identifyGps(char* out, size_t outLen) {
   for (const uint32_t baud : bauds) {
     Serial1.updateBaudRate(baud);
     if (readUbxMonVer(out, outLen, 500)) {
+      gGpsBaud = baud;
       Serial1.end();
       return;
     }
@@ -474,6 +478,14 @@ void identifyRadios(char* lora, size_t loraLen, char* gps, size_t gpsLen) {
   BoardT5S3::disableGpsLora();
 }
 #endif
+
+uint32_t boardGpsBaud() {
+#if T5S3_HAS_LORA_GPS
+  return gGpsBaud;
+#else
+  return 9600;
+#endif
+}
 
 BoardDeviceInfo boardDeviceInfo() {
   BoardDeviceInfo info;
@@ -586,14 +598,20 @@ int boardBrightness() { return gBrightness; }
 bool boardFrontlightOn() { return gLightOn && gBrightness > 0; }
 bool boardHasFrontlight() { return gLightHw; }
 
-void boardSetBrightness(int percent) {
+static void applyBrightness(int percent, bool persist) {
   if (percent < 0) percent = 0;
   if (percent > 100) percent = 100;
   gBrightness = static_cast<uint8_t>(percent);
   gLightOn = gBrightness > 0;
   applyFrontlight();
-  persistLight();
+  if (persist) persistLight();
 }
+
+void boardSetBrightness(int percent) { applyBrightness(percent, true); }
+
+void boardPreviewBrightness(int percent) { applyBrightness(percent, false); }
+
+void boardCommitBrightness() { persistLight(); }
 
 void boardSetFrontlightOn(bool on) {
   gLightOn = on;

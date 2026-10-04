@@ -6,6 +6,8 @@
 #include <SD.h>
 #include <cstring>
 
+uint32_t gSdHostActiveMs = 0;
+
 namespace {
 
 constexpr size_t kChunk = 1024;
@@ -36,9 +38,10 @@ bool readExact(uint8_t* dst, size_t n, uint32_t timeoutMs) {
 bool pathAllowed(const char* path) {
   if (!path || path[0] != '/') return false;
   if (strstr(path, "..") != nullptr) return false;
-  // Host may write firmware bins and custom sleep images only.
+  // Host may write firmware bins, custom sleep images, and map tiles.
   if (strncmp(path, "/firmware", 9) == 0 && (path[9] == '\0' || path[9] == '/')) return true;
   if (strncmp(path, "/sleep", 6) == 0 && (path[6] == '\0' || path[6] == '/')) return true;
+  if (strncmp(path, "/maps", 5) == 0 && (path[5] == '\0' || path[5] == '/')) return true;
   return false;
 }
 
@@ -139,7 +142,9 @@ void handlePut(const char* path, size_t size) {
   out.close();
   Serial.printf("\nDONE %u\n", static_cast<unsigned>(written));
   Serial.flush();
-  uiDrawProgress("SD upload", 100);
+  // A map pack is thousands of small files. Refreshing the panel for each one
+  // would block the copy for hours.
+  if (strncmp(path, "/maps/", 6) != 0) uiDrawProgress("SD upload", 100);
 }
 
 void handleGet(const char* path) {
@@ -232,6 +237,7 @@ void handleProbe(const char* path) {
 }
 
 void handleLine(char* line) {
+  gSdHostActiveMs = millis();
   if (strcmp(line, "BASI") == 0) {
     Serial.printf("BASI OK %s\n", BASILAUNCHER_VERSION);
     return;

@@ -8,6 +8,7 @@
 #include "canvas.h"
 #include "file_ops.h"
 #include "flash_install.h"
+#include "gps.h"
 #include "image_draw.h"
 #include "sd_serial.h"
 #include "sleep_screen.h"
@@ -18,10 +19,13 @@
 #include <SD.h>
 #include <esp_task_wdt.h>
 
+extern uint32_t gSdHostActiveMs;
+
 namespace {
 
 Screen gScreen = Screen::Home;
 Screen gShadeReturn = Screen::Home;
+Screen gGpsReturn = Screen::Home;
 std::vector<DirEntry> gEntries;
 char gPath[kFilePathMax] = "/";
 char gBrowsePath[kFilePathMax] = "/";
@@ -38,6 +42,23 @@ bool gSheetOpen = false;
 uint8_t gLastClockMinute = 255;
 uint32_t gLastActiveMs = 0;
 uint32_t gLastHomeScrubMs = 0;
+// Set while a brightness drag is active. The e-ink refresh blocks this loop,
+// so a separate task keeps the lamp on the finger.
+volatile bool gBrightFollow = false;
+
+void brightnessFollowTask(void*) {
+  for (;;) {
+    if (gBrightFollow) {
+      int x = 0;
+      int y = 0;
+      if (boardTouchHeld(x, y)) {
+        const int pct = uiBrightnessFromTouchX(x);
+        if (pct != boardBrightness()) boardPreviewBrightness(pct);
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(12));
+  }
+}
 
 char gTextBuf[kTextEditMax];
 size_t gTextLen = 0;
@@ -665,11 +686,59 @@ void showWifi() {
   redrawWifi();
 }
 
+void showGps() {
+  if (gScreen == Screen::Shade) gGpsReturn = gShadeReturn;
+  else if (gScreen != Screen::Gps) gGpsReturn = gScreen;
+  gpsStart(true);
+  gScreen = Screen::Gps;
+  refreshSlots();
+  uiDrawGps();
+}
+
+void resumeGps() {
+  gpsStart(false);
+  gScreen = Screen::Gps;
+  refreshSlots();
+  uiDrawGps();
+}
+
+void leaveGps() {
+  gpsLeave();
+  const Screen back = gGpsReturn;
+  gGpsReturn = Screen::Home;
+  switch (back) {
+    case Screen::Explorer:
+      redrawExplorer();
+      break;
+    case Screen::TextEdit:
+      redrawTextEdit(true);
+      break;
+    case Screen::Settings:
+      gScreen = Screen::Settings;
+      refreshSlots();
+      uiDrawSettings(gSpace);
+      break;
+    case Screen::Hardware:
+      gScreen = Screen::Hardware;
+      refreshSlots();
+      uiDrawHardware(gSpace);
+      break;
+    case Screen::Wifi:
+      redrawWifi();
+      break;
+    case Screen::Home:
+    default:
+      showHome();
+      break;
+  }
+}
+
 void showShade() {
   // Remember the underlying screen so Close returns there (not always Home).
   // Settings is reached from the shade itself — keep the prior return target.
+  if (gScreen == Screen::Gps) gpsPause();
   if (gScreen == Screen::Home || gScreen == Screen::Explorer || gScreen == Screen::TextEdit ||
-      gScreen == Screen::Hardware || gScreen == Screen::Wifi) {
+      gScreen == Screen::Hardware || gScreen == Screen::Wifi || gScreen == Screen::Gps) {
     gShadeReturn = gScreen;
   }
   canvasSetHoldCleanRefresh(false);
@@ -702,6 +771,9 @@ void closeShade() {
     case Screen::Wifi:
       redrawWifi();
       break;
+    case Screen::Gps:
+      resumeGps();
+      break;
     case Screen::Home:
     default:
       showHome();
@@ -710,6 +782,7 @@ void closeShade() {
 }
 
 void handleShadeHit(const UiHit& hit) {
+  uiAcknowledgePress(hit);
   switch (hit.kind) {
     case UiHit::Kind::CloseShade:
       closeShade();
@@ -759,6 +832,9 @@ void handleShadeHit(const UiHit& hit) {
         case Screen::Wifi:
           redrawWifi();
           break;
+        case Screen::Gps:
+          resumeGps();
+          break;
         case Screen::Home:
         default:
           showHome();
@@ -771,6 +847,10 @@ void handleShadeHit(const UiHit& hit) {
       gScreen = Screen::Settings;
       refreshSlots();
       uiDrawSettings(gSpace);
+      break;
+    case UiHit::Kind::OpenGps:
+      if (gShadeReturn == Screen::Gps) closeShade();
+      else showGps();
       break;
     case UiHit::Kind::Wifi:
       if (wifiIsActive()) {
@@ -797,6 +877,7 @@ void handleExplorerLongPress(int index) {
 }
 
 void handleExplorerHit(const UiHit& hit) {
+  uiAcknowledgePress(hit);
   const int visible = uiExplorerVisibleRows();
   switch (hit.kind) {
     case UiHit::Kind::Back:
@@ -889,6 +970,7 @@ void handleExplorerHit(const UiHit& hit) {
 // Sets *layoutChanged when the keyboard glyphs must be redrawn; *textChanged
 // when only the field content changed.
 bool applyTextHit(const UiHit& hit, bool& textChanged, bool& layoutChanged) {
+  if (hit.kind == UiHit::Kind::KeyDone || hit.kind == UiHit::Kind::KeyCancel) uiAcknowledgePress(hit);
   switch (hit.kind) {
     case UiHit::Kind::KeyCancel:
       finishTextEdit(false);
@@ -958,6 +1040,7 @@ void handleTextHit(const UiHit& hit) {
 
 void handleTouch(int x, int y) {
   if (gScreen == Screen::Message) {
+    uiAcknowledgePress(uiHitMessage(x, y));
     const bool backToWifi = gMessageReturnWifi;
     gMessageReturnWifi = false;
     if (backToWifi) redrawWifi();
@@ -970,6 +1053,7 @@ void handleTouch(int x, int y) {
 
   if (gScreen == Screen::Confirm) {
     const UiHit hit = uiHitConfirm(x, y);
+    uiAcknowledgePress(hit);
     if (hit.kind == UiHit::Kind::ConfirmYes) confirmYes();
     else if (hit.kind == UiHit::Kind::ConfirmNo) {
       gConfirmAction = ConfirmAction::None;
@@ -981,6 +1065,7 @@ void handleTouch(int x, int y) {
 
   if (gScreen == Screen::ImageView) {
     const UiHit hit = uiHitImageView(x, y);
+    uiAcknowledgePress(hit);
     if (hit.kind == UiHit::Kind::SetSleep) {
       if (sleepSaveCapturedFrame(gImagePath)) uiDrawImageViewHint(true);
       else {
@@ -1060,6 +1145,7 @@ void handleTouch(int x, int y) {
       }
     };
 
+    uiAcknowledgePress(hit);
     if (hit.kind == UiHit::Kind::Back) {
       showShade();
     } else if (hit.kind == UiHit::Kind::Hardware) {
@@ -1128,6 +1214,7 @@ void handleTouch(int x, int y) {
 
   if (gScreen == Screen::Hardware) {
     const UiHit hit = uiHitHardware(x, y);
+    uiAcknowledgePress(hit);
     if (hit.kind == UiHit::Kind::OpenShade) showShade();
     else if (hit.kind == UiHit::Kind::Back) {
       gScreen = Screen::Settings;
@@ -1140,6 +1227,7 @@ void handleTouch(int x, int y) {
   if (gScreen == Screen::Wifi) {
     const bool active = wifiIsActive();
     const UiHit hit = uiHitWifi(x, y, active);
+    uiAcknowledgePress(hit);
     if (hit.kind == UiHit::Kind::Back) {
       stopWifiSession();
       gScreen = Screen::Settings;
@@ -1153,6 +1241,21 @@ void handleTouch(int x, int y) {
       redrawWifi();
     } else if (hit.kind == UiHit::Kind::WifiChangePass) {
       openTextEditor(TextEditMode::ApPassword, "Hotspot password", wifiApPassword(), nullptr);
+    }
+    return;
+  }
+
+  if (gScreen == Screen::Gps) {
+    const UiHit hit = uiHitGps(x, y);
+    uiAcknowledgePress(hit);
+    if (hit.kind == UiHit::Kind::OpenShade) showShade();
+    else if (hit.kind == UiHit::Kind::Back) leaveGps();
+    else if (hit.kind == UiHit::Kind::GpsZoomIn || hit.kind == UiHit::Kind::GpsZoomOut) {
+      if (hit.kind == UiHit::Kind::GpsZoomIn) gpsZoomIn();
+      else gpsZoomOut();
+      uiDrawGps();
+    } else if (hit.kind == UiHit::Kind::GpsRecenter) {
+      if (gpsRecenter()) uiDrawGps();
     }
     return;
   }
@@ -1172,6 +1275,7 @@ void handleTouch(int x, int y) {
 
   if (gScreen == Screen::Home) {
     const UiHit hit = uiHitHome(x, y);
+    uiAcknowledgePress(hit);
     switch (hit.kind) {
       case UiHit::Kind::OpenShade:
         showShade();
@@ -1226,6 +1330,7 @@ void setup() {
   boardInitPower();
   boardInitClock();
   boardInitFrontlight();
+  xTaskCreate(brightnessFollowTask, "bright", 2048, nullptr, 3, nullptr);
   appsLoadSlotLabels();
 
   // Short tap while asleep: user may start holding during panel/SD init.
@@ -1293,19 +1398,129 @@ void loop() {
                         fileClipboard().hasItem, static_cast<int>(gSelectedEntries.size()));
       if (held.kind == UiHit::Kind::SelectEntry) {
         noteActivity();
+        uiAcknowledgePress(held);
         handleExplorerLongPress(held.index);
       }
     } else if (gScreen == Screen::Shade) {
       const UiHit held = uiHitShade(longPressX, longPressY);
       if (held.kind == UiHit::Kind::Wifi) {
         noteActivity();
+        uiAcknowledgePress(held);
         showWifi();
       }
     }
   }
 
+  // A map drag is any finger move on the map, including a slow one. A swipe
+  // only counts if it finishes inside 700 ms, so panning uses the held point.
+  static bool mapDrag = false;
+  static int mapX0 = 0, mapY0 = 0, mapX1 = 0, mapY1 = 0;
+  static bool brightTracking = false;
+  static bool brightArmed = false;
+  static bool brightChanged = false;
+  static int brightAtPress = 0;
+  static int brightX0 = 0;
+  static int brightY0 = 0;
+  static int brightShown = -1;
+  bool ignoreTap = false;
+
+  if (gScreen != Screen::Gps) mapDrag = false;
+  if (gScreen != Screen::Shade) {
+    brightTracking = false;
+    brightArmed = false;
+    brightChanged = false;
+    brightShown = -1;
+    gBrightFollow = false;
+  }
+
+  int hx = 0, hy = 0;
+  const bool held = boardTouchHeld(hx, hy);
+  if (gScreen == Screen::Gps && held) {
+    if (!mapDrag) {
+      if (uiGpsMapContains(hx, hy)) {
+        mapDrag = true;
+        mapX0 = mapX1 = hx;
+        mapY0 = mapY1 = hy;
+      }
+    } else {
+      mapX1 = hx;
+      mapY1 = hy;
+    }
+  }
+  if (gScreen == Screen::Shade && held) {
+    noteActivity();
+    if (!brightTracking) {
+      brightTracking = true;
+      int bx = 0, by = 0, bw = 0, bh = 0;
+      uiShadeBrightnessTrack(bx, by, bw, bh);
+      // The drawn track is inset in the stepper row. The whole row between
+      // the - and + buttons starts the gesture.
+      brightArmed = boardHasFrontlight() && hy >= by - 16 && hy <= by + bh + 16 && hx >= bx &&
+                    hx <= bx + bw;
+      brightAtPress = boardBrightness();
+      brightShown = brightAtPress;
+      brightChanged = false;
+      brightX0 = hx;
+      brightY0 = hy;
+    }
+    if (brightArmed) {
+      const int dx = hx - brightX0;
+      const int dy = hy - brightY0;
+      // A pull up to close the shade crosses the bar. Put the lamp back and
+      // leave the level for the close gesture.
+      if (dy < -48 && abs(dy) > abs(dx)) {
+        gBrightFollow = false;
+        if (brightChanged) boardPreviewBrightness(brightAtPress);
+        brightArmed = false;
+        brightChanged = false;
+        canvasSetHoldCleanRefresh(false);
+      } else {
+        canvasSetHoldCleanRefresh(true);
+        gBrightFollow = true;
+        const int pct = uiBrightnessFromTouchX(hx);
+        if (pct != boardBrightness()) {
+          boardPreviewBrightness(pct);
+          brightChanged = true;
+        }
+        // The bar and the number chase the lamp. The refresh may lag; the
+        // follow task keeps the lamp itself on the finger while it runs.
+        const int drawAt = boardBrightness();
+        if (drawAt != brightShown) {
+          uiRedrawShadeControls(gSpace);
+          brightShown = drawAt;
+        }
+      }
+    }
+  }
+
   int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-  if (boardPollSwipe(x0, y0, x1, y1)) {
+  bool swipePolled = false;
+  if (gScreen == Screen::Gps && mapDrag && !held) {
+    swipePolled = true;
+    const bool gotSwipe = boardPollSwipe(x0, y0, x1, y1);
+    if (!gotSwipe) {
+      x0 = mapX0;
+      y0 = mapY0;
+      x1 = mapX1;
+      y1 = mapY1;
+    }
+    mapDrag = false;
+    const int dx = x1 - x0;
+    const int dy = y1 - y0;
+    const bool pullDown = y0 < 120 && dy > 80 && abs(dy) > abs(dx);
+    if (pullDown) {
+      showShade();
+      return;
+    }
+    if ((abs(dx) >= 36 || abs(dy) >= 36) && uiGpsMapContains(x0, y0)) {
+      if (gpsPan(dx, dy)) {
+        uiDrawGps();
+        ignoreTap = true;
+      }
+    }
+  }
+
+  if (!swipePolled && boardPollSwipe(x0, y0, x1, y1)) {
     noteActivity();
     const int dy = y1 - y0;
     const int dx = x1 - x0;
@@ -1313,12 +1528,20 @@ void loop() {
     const bool pullDown = fromTop && dy > 80 && abs(dy) > abs(dx);
     const bool canShade = gScreen == Screen::Home || gScreen == Screen::Explorer ||
                           gScreen == Screen::TextEdit || gScreen == Screen::Settings ||
-                          gScreen == Screen::Hardware || gScreen == Screen::Wifi;
+                          gScreen == Screen::Hardware || gScreen == Screen::Wifi ||
+                          gScreen == Screen::Gps;
     if (canShade && pullDown) {
       showShade();
       return;
     }
     if (gScreen == Screen::Shade && dy < -80 && abs(dy) > abs(dx)) {
+      gBrightFollow = false;
+      if (brightChanged) boardSetBrightness(brightAtPress);
+      brightTracking = false;
+      brightArmed = false;
+      brightChanged = false;
+      brightShown = -1;
+      canvasSetHoldCleanRefresh(false);
       closeShade();
       return;
     }
@@ -1335,55 +1558,42 @@ void loop() {
     }
   }
 
-  if (gScreen == Screen::Shade) {
-    // Only drag brightness when the press started on the track. A swipe-up to
-    // close crosses the bar and must not turn the light on mid-gesture.
-    static bool brightDragArmed = false;
-    static bool shadeTouchSeen = false;
-    static int shadeTouchStartY = 0;
-    int hx = 0, hy = 0;
-    bool draggingBrightness = false;
-    if (boardTouchHeld(hx, hy)) {
-      noteActivity();
-      int bx, by, bw, bh;
-      uiShadeBrightnessTrack(bx, by, bw, bh);
-      const bool overTrack =
-          hy >= by - 20 && hy <= by + bh + 20 && hx >= bx && hx <= bx + bw;
-      if (!shadeTouchSeen) {
-        shadeTouchSeen = true;
-        shadeTouchStartY = hy;
-        brightDragArmed = overTrack;
-      } else if (brightDragArmed && abs(hy - shadeTouchStartY) > 40) {
-        brightDragArmed = false;
+  if (gScreen == Screen::Shade && brightTracking && !held) {
+    gBrightFollow = false;
+    brightTracking = false;
+    brightArmed = false;
+    canvasSetHoldCleanRefresh(false);
+    if (brightChanged) {
+      boardCommitBrightness();
+      if (boardBrightness() != brightShown) {
+        uiRedrawShadeControls(gSpace);
+        brightShown = boardBrightness();
       }
-      if (brightDragArmed && overTrack) {
-        draggingBrightness = true;
-        canvasSetHoldCleanRefresh(true);
-        static int lastBright = -1;
-        const int pct = uiBrightnessFromTouchX(hx);
-        if (pct != lastBright) {
-          lastBright = pct;
-          boardSetBrightness(pct);
-          static uint32_t lastDraw = 0;
-          const uint32_t now = millis();
-          if (now - lastDraw > 180) {
-            lastDraw = now;
-            uiRedrawShadeControls(gSpace);
-          }
-        }
-      }
-    } else {
-      shadeTouchSeen = false;
-      brightDragArmed = false;
+      ignoreTap = true;
+      brightChanged = false;
     }
-    if (!draggingBrightness) canvasSetHoldCleanRefresh(false);
+  } else if (gScreen == Screen::Shade && !brightArmed) {
+    canvasSetHoldCleanRefresh(false);
   }
 
   int x = 0, y = 0;
-  if (boardPollTouch(x, y)) {
+  if (ignoreTap) {
+    boardPollTouch(x, y);
+  } else if (boardPollTouch(x, y)) {
     noteActivity();
     Serial.printf("tap %d,%d screen=%d\n", x, y, static_cast<int>(gScreen));
     handleTouch(x, y);
+  }
+
+  if (gScreen == Screen::Gps && gpsActive() && !mapDrag) {
+    const GpsPoll polled = gpsPoll();
+    static uint32_t lastGpsDraw = 0;
+    const uint32_t now = millis();
+    if (lastGpsDraw == 0) lastGpsDraw = now;
+    if (polled.fixChanged || (polled.sentence && now - lastGpsDraw > 10000)) {
+      uiDrawGps();
+      lastGpsDraw = now;
+    }
   }
 
   canvasServiceRefresh();
@@ -1392,7 +1602,8 @@ void loop() {
   if (gScreen != Screen::ImageView && boardPowerConnectionChanged()) {
     const bool grabber = gScreen == Screen::Home || gScreen == Screen::Explorer ||
                          gScreen == Screen::Settings || gScreen == Screen::Hardware ||
-                         gScreen == Screen::Wifi || gScreen == Screen::TextEdit;
+                         gScreen == Screen::Wifi || gScreen == Screen::TextEdit ||
+                         gScreen == Screen::Gps;
     if (gScreen != Screen::Progress) canvasRequestCleanRefresh();
     uiRedrawStatusBar(gSpace, grabber);
   }
@@ -1407,8 +1618,9 @@ void loop() {
   }
 
   const int sleepMin = boardSleepAfterMin();
+  const uint32_t lastActive = gLastActiveMs > gSdHostActiveMs ? gLastActiveMs : gSdHostActiveMs;
   if (sleepMin > 0 && gScreen != Screen::Progress && gScreen != Screen::Wifi &&
-      (millis() - gLastActiveMs) > static_cast<uint32_t>(sleepMin) * 60u * 1000u) {
+      (millis() - lastActive) > static_cast<uint32_t>(sleepMin) * 60u * 1000u) {
     stopWifiSession();
     enterSleepWithScreensaver();
   }

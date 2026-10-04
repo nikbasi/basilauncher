@@ -55,6 +55,8 @@ void canvasFillRect(int x, int y, int w, int h, bool black);
 void canvasDrawRect(int x, int y, int w, int h, bool black);
 void canvasDrawRoundRect(int x, int y, int w, int h, int r, bool black);
 void canvasFillRoundRect(int x, int y, int w, int h, int r, bool black);
+// Flip the 1-bit pixels inside the same rounded shape canvasFillRoundRect paints.
+void canvasInvertRoundRect(int x, int y, int w, int h, int r);
 // True grayscale is reserved for stable/refined frames. Interactive FAST
 // frames leave these pixels white, avoiding a high-churn 1-bit dither pattern.
 void canvasFillGrayRect(int x, int y, int w, int h, bool light = true);

@@ -391,6 +391,45 @@ void canvasDrawRoundRect(int x, int y, int w, int h, int r, bool black) {
   }
 }
 
+namespace {
+
+bool roundContains(int lx, int ly, int w, int h, int r) {
+  if (lx < 0 || ly < 0 || lx >= w || ly >= h) return false;
+  if (r <= 0 || r * 2 >= w || r * 2 >= h) return true;
+  if (lx >= r && lx < w - r) return true;
+  if (ly >= r && ly < h - r) return true;
+  const int dx = lx < r ? (r - 1) - lx : lx - (w - r);
+  const int dy = ly < r ? (r - 1) - ly : ly - (h - r);
+  return dx >= 0 && dy >= 0 && dx * dx + dy * dy <= r * r;
+}
+
+bool pixelBlack(const uint8_t* fb, uint16_t wb, int px, int py) {
+  const uint32_t idx = static_cast<uint32_t>(py) * wb + static_cast<uint32_t>(px / 8);
+  const uint8_t mask = static_cast<uint8_t>(0x80 >> (px & 7));
+  return (fb[idx] & mask) == 0;
+}
+
+}  // namespace
+
+void canvasInvertRoundRect(int x, int y, int w, int h, int r) {
+  if (w <= 0 || h <= 0) return;
+  uint8_t* fb = display.getFrameBuffer();
+  if (!fb) return;
+  const uint16_t wb = display.getDisplayWidthBytes();
+  for (int ly = 0; ly < h; ++ly) {
+    if ((ly & 31) == 0) esp_task_wdt_reset();
+    for (int lx = 0; lx < w; ++lx) {
+      if (!roundContains(lx, ly, w, h, r)) continue;
+      int px = 0, py = 0;
+      toPhysical(x + lx, y + ly, px, py);
+      if (px < 0 || py < 0 || px >= kPhysW || py >= kPhysH) continue;
+      setPhysPixel(fb, wb, px, py, !pixelBlack(fb, wb, px, py));
+      setPlanePixel(gGrayLsb, wb, px, py, false);
+      setPlanePixel(gGrayMsb, wb, px, py, false);
+    }
+  }
+}
+
 void canvasFillRoundRect(int x, int y, int w, int h, int r, bool black) {
   if (w <= 0 || h <= 0) return;
   if (r <= 0 || r * 2 >= w || r * 2 >= h) {

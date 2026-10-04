@@ -9,6 +9,7 @@ enum class Screen {
   Settings,
   Hardware,
   Wifi,
+  Gps,
   Shade,
   Progress,
   Message,
@@ -83,10 +84,21 @@ struct UiHit {
     KeyCancel,
     ConfirmYes,
     ConfirmNo,
+    OpenGps,
+    GpsZoomIn,
+    GpsZoomOut,
+    GpsRecenter,
   };
   Kind kind = Kind::None;
   int index = -1;
   int value = -1;  // e.g. brightness from slider, or key char
+  // Visual control that accepted the tap. Empty when the tap should not flash.
+  // rr is the corner radius of that control, matching how it was drawn.
+  int rx = 0;
+  int ry = 0;
+  int rw = 0;
+  int rh = 0;
+  int rr = 0;
 };
 
 // Centered brand splash shown once at boot before the home UI.
@@ -124,6 +136,8 @@ void uiRedrawHomeStatus(const FlashSpace& space);
 void uiRedrawStatusBar(const FlashSpace& space, bool showClosedGrabber);
 void uiDrawProgress(const char* title, int percent);
 void uiDrawMessage(const char* title, const char* body);
+// OK button rect when the tap lands on it; kind stays None either way.
+UiHit uiHitMessage(int x, int y);
 void uiDrawConfirm(const char* title, const char* body);
 void uiDrawImageViewHint(bool saved = false);  // Close / Set sleep chips after the photo
 UiHit uiHitImageView(int x, int y);
@@ -139,10 +153,17 @@ UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool
                     bool clipboardHas, int selectedCount);
 UiHit uiHitSettings(int x, int y);
 UiHit uiHitHardware(int x, int y);
+void uiDrawGps();
+UiHit uiHitGps(int x, int y);
+bool uiGpsMapContains(int x, int y);
 UiHit uiHitWifi(int x, int y, bool active);
 UiHit uiHitShade(int x, int y);
 UiHit uiHitConfirm(int x, int y);
 UiHit uiHitTextEdit(int x, int y, bool symbols, bool shift);
+
+// Paint the hit control black and push only that patch. The following redraw
+// replaces it. Empty rects and near-full patches are ignored.
+void uiAcknowledgePress(const UiHit& hit);
 
 // Brightness track geometry for live drag.
 void uiShadeBrightnessTrack(int& x, int& y, int& w, int& h);

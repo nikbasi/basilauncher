@@ -1,5 +1,7 @@
 #include "sleep_screen.h"
 
+#include "gps.h"
+
 #include "board_hal.h"
 #include "image_draw.h"
 #include "canvas.h"
@@ -283,6 +285,7 @@ bool sleepWokeFromBootButton() {
 bool sleepTryAbortForBootHold(uint32_t needMs) { return abortSleepForBootHold(needMs); }
 
 bool enterSleepWithScreensaver(bool quiet) {
+  gpsLeave();
   if (!quiet) {
     // Release the hold-to-sleep press before we start listening for wake.
     waitBootReleased();
@@ -293,6 +296,15 @@ bool enterSleepWithScreensaver(bool quiet) {
 
   if (abortSleepForBootHold()) return false;
 
+  // The first sleep always announces itself. A short tap that only changes
+  // the photo does not.
+  if (!quiet) {
+    drawSleepBanner("Entering sleep...", /*top=*/true, /*scale=*/2);
+    canvasPresentFor(CanvasRefreshIntent::Navigation);
+    delay(400);
+    if (abortSleepForBootHold()) return false;
+  }
+
   gSleepAbortWake = false;
   char path[kFramePathMax];
   const bool havePath = chooseSleepPath(quiet, path, sizeof(path));
@@ -301,14 +313,6 @@ bool enterSleepWithScreensaver(bool quiet) {
     drew = blitFrame();
   }
   if (havePath && !drew) {
-    // A short tap only swaps the photo. The "Entering sleep..." banner is for
-    // the first sleep, not for changing the background.
-    if (!quiet) {
-      drawSleepBanner("Entering sleep...", /*top=*/true, /*scale=*/2);
-      canvasPresentFor(CanvasRefreshIntent::Navigation);
-      delay(300);
-      if (abortSleepForBootHold()) return false;
-    }
     if (imageDrawFile(path, abortCheckBootHold)) {
       uint8_t* fb = display.getFrameBuffer();
       const size_t n = display.getBufferSize();
