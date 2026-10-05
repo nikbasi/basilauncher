@@ -5,6 +5,8 @@
 
 #include "apps_scan.h"
 #include "board_hal.h"
+#include "browser/fetch.h"
+#include "browser/web.h"
 #include "canvas.h"
 #include "file_ops.h"
 #include "flash_install.h"
@@ -75,6 +77,12 @@ std::vector<std::string> gConfirmPaths;
 
 bool gMessageReturnExplorer = false;
 bool gMessageReturnWifi = false;
+bool gMessageReturnNet = false;
+
+constexpr int kNetMax = 12;
+WifiAp gNets[kNetMax];
+int gNetCount = 0;
+char gJoinSsid[33] = {};
 
 void noteActivity() { gLastActiveMs = millis(); }
 
@@ -152,6 +160,7 @@ void showMessage(const char* title, const char* body, bool returnExplorer) {
   canvasSetHoldCleanRefresh(false);
   gMessageReturnExplorer = returnExplorer;
   gMessageReturnWifi = false;
+  gMessageReturnNet = false;
   gScreen = Screen::Message;
   uiDrawMessage(title, body);
 }
@@ -160,6 +169,7 @@ void showWifiNotice(const char* title, const char* body) {
   canvasSetHoldCleanRefresh(false);
   gMessageReturnExplorer = false;
   gMessageReturnWifi = true;
+  gMessageReturnNet = false;
   gScreen = Screen::Message;
   uiDrawMessage(title, body);
 }
@@ -338,6 +348,8 @@ void openImage(const char* path) {
 }
 
 void redrawTextEdit(bool scrub = false) {
+  canvasDisarmLocalClean();
+  canvasSetHoldCleanRefresh(true);
   gScreen = Screen::TextEdit;
   uiDrawTextEdit(gTextTitle, gTextBuf, gOskSymbols, gOskShift, gTextMode, scrub);
 }
@@ -379,7 +391,9 @@ void openTextFile(const char* path, const char* name) {
 }
 
 void textAppend(char ch) {
-  const size_t limit = gTextMode == TextEditMode::ApPassword ? 63 : sizeof(gTextBuf) - 1;
+  size_t limit = sizeof(gTextBuf) - 1;
+  if (gTextMode == TextEditMode::ApPassword || gTextMode == TextEditMode::StaPassword) limit = 63;
+  else if (gTextMode == TextEditMode::WebUrl) limit = 500;
   if (gTextLen >= limit) return;
   gTextBuf[gTextLen++] = ch;
   gTextBuf[gTextLen] = 0;
@@ -411,7 +425,7 @@ void applyApPassword(bool save) {
     showWifiNotice("Password", "Use 8 to 63 characters.");
     return;
   }
-  if (wifiIsActive()) {
+  if (wifiIsHotspot()) {
     stopWifiSession();
     startWifiHotspot(true);
     return;
@@ -419,11 +433,118 @@ void applyApPassword(bool save) {
   redrawWifi();
 }
 
+void redrawNet() {
+  gScreen = Screen::Net;
+  refreshSlots();
+  uiDrawNet(gSpace, wifiGetStatus(), gNets, gNetCount);
+}
+
+void showNetNotice(const char* title, const char* body) {
+  canvasSetHoldCleanRefresh(false);
+  gMessageReturnExplorer = false;
+  gMessageReturnWifi = false;
+  gMessageReturnNet = true;
+  gScreen = Screen::Message;
+  uiDrawMessage(title, body);
+}
+
+void joinNetwork(int index) {
+  if (index < 0 || index >= gNetCount) return;
+  snprintf(gJoinSsid, sizeof(gJoinSsid), "%s", gNets[index].ssid);
+  if (!gNets[index].open) {
+    char saved[65];
+    if (wifiLookupPassword(gJoinSsid, saved, sizeof(saved))) {
+      uiDrawProgress("Joining...", 60);
+      fetch_disconnect();
+      if (wifiJoin(gJoinSsid, saved)) {
+        redrawNet();
+        return;
+      }
+      openTextEditor(TextEditMode::StaPassword, "Wi-Fi password", saved, nullptr);
+      return;
+    }
+    openTextEditor(TextEditMode::StaPassword, "Wi-Fi password", "", nullptr);
+    return;
+  }
+  uiDrawProgress("Joining...", 60);
+  fetch_disconnect();
+  if (!wifiJoin(gJoinSsid, "")) {
+    showNetNotice("Wi-Fi", "Could not join that network.");
+    return;
+  }
+  redrawNet();
+}
+
+void showNetworks() {
+  if (wifiIsHotspot()) stopWifiSession();
+  gScreen = Screen::Net;
+  uiDrawProgress("Scanning...", 40);
+  gNetCount = wifiScan(gNets, kNetMax);
+  redrawNet();
+}
+
+int gWebField = -1;
+
+void openWebAddress() {
+  openTextEditor(TextEditMode::WebUrl, "Web address", webCurrentUrl(), nullptr);
+}
+
+void openWebField(int index) {
+  gWebField = index;
+  openTextEditor(TextEditMode::WebField, "Search", webFieldValue(index), nullptr);
+}
+
+void loadWeb(const char* url, bool record) {
+  if (!wifiIsStation()) {
+    showNetNotice("Web", "Join a Wi-Fi network first.");
+    return;
+  }
+  gScreen = Screen::Web;
+  uiDrawProgress("Loading...", 50);
+  webLoad(url, record);
+  webDraw();
+  gScreen = Screen::Web;
+}
+
 void finishTextEdit(bool save) {
+  canvasSetHoldCleanRefresh(false);
+  canvasDisarmLocalClean();
   canvasRequestCleanRefresh();
 
   if (gTextMode == TextEditMode::ApPassword) {
     applyApPassword(save);
+    return;
+  }
+
+  if (gTextMode == TextEditMode::StaPassword) {
+    if (!save) {
+      redrawNet();
+      return;
+    }
+    uiDrawProgress("Joining...", 60);
+    fetch_disconnect();
+    if (!wifiJoin(gJoinSsid, gTextBuf)) {
+      showNetNotice("Wi-Fi", "Could not join that network.");
+      return;
+    }
+    redrawNet();
+    return;
+  }
+
+  if (gTextMode == TextEditMode::WebUrl) {
+    if (!save) {
+      gScreen = Screen::Web;
+      webDraw();
+      return;
+    }
+    loadWeb(gTextBuf, true);
+    return;
+  }
+
+  if (gTextMode == TextEditMode::WebField) {
+    if (save) webSetField(gWebField, gTextBuf);
+    gScreen = Screen::Web;
+    webDraw();
     return;
   }
 
@@ -652,8 +773,8 @@ void clearSlot(int slotIndex) {
 void redrawWifi() {
   gScreen = Screen::Wifi;
   const WifiStatus st = wifiGetStatus();
-  const bool active = wifiIsActive();
-  const char* status = !active ? "Off" : "Hotspot on";
+  const bool active = wifiIsHotspot();
+  const char* status = !active ? "Off" : "Transfer on";
   char detail[96];
   detail[0] = 0;
   const char* msg = wifiServerLastMessage();
@@ -666,15 +787,16 @@ void redrawWifi() {
 }
 
 void stopWifiSession() {
+  fetch_disconnect();
   wifiServerStop();
   wifiStop();
 }
 
 void startWifiHotspot(bool openDetails) {
-  uiDrawProgress("Starting hotspot...", 10);
+  uiDrawProgress("Starting transfer...", 10);
   if (!wifiStartSoftAp() || !wifiServerStart()) {
     stopWifiSession();
-    showMessage("Wi-Fi failed", "Could not start the hotspot.", false);
+    showMessage("Transfer failed", "Could not start file transfer.", false);
     return;
   }
   wifiServerClearMessage();
@@ -726,6 +848,13 @@ void leaveGps() {
     case Screen::Wifi:
       redrawWifi();
       break;
+    case Screen::Net:
+      redrawNet();
+      break;
+    case Screen::Web:
+      gScreen = Screen::Web;
+      webDraw();
+      break;
     case Screen::Home:
     default:
       showHome();
@@ -735,13 +864,15 @@ void leaveGps() {
 
 void showShade() {
   // Remember the underlying screen so Close returns there (not always Home).
-  // Settings is reached from the shade itself — keep the prior return target.
+  // Settings, Wi-Fi, and file transfer are opened from the shade. They must
+  // not become the return target, or Back lands on them again.
   if (gScreen == Screen::Gps) gpsPause();
   if (gScreen == Screen::Home || gScreen == Screen::Explorer || gScreen == Screen::TextEdit ||
-      gScreen == Screen::Hardware || gScreen == Screen::Wifi || gScreen == Screen::Gps) {
+      gScreen == Screen::Hardware || gScreen == Screen::Web || gScreen == Screen::Gps) {
     gShadeReturn = gScreen;
   }
   canvasSetHoldCleanRefresh(false);
+  canvasDisarmLocalClean();
   gScreen = Screen::Shade;
   refreshSlots();
   uiDrawShade(gSpace);
@@ -770,6 +901,13 @@ void closeShade() {
       break;
     case Screen::Wifi:
       redrawWifi();
+      break;
+    case Screen::Net:
+      redrawNet();
+      break;
+    case Screen::Web:
+      gScreen = Screen::Web;
+      webDraw();
       break;
     case Screen::Gps:
       resumeGps();
@@ -832,6 +970,13 @@ void handleShadeHit(const UiHit& hit) {
         case Screen::Wifi:
           redrawWifi();
           break;
+        case Screen::Net:
+          redrawNet();
+          break;
+        case Screen::Web:
+          gScreen = Screen::Web;
+          webDraw();
+          break;
         case Screen::Gps:
           resumeGps();
           break;
@@ -853,12 +998,15 @@ void handleShadeHit(const UiHit& hit) {
       else showGps();
       break;
     case UiHit::Kind::Wifi:
-      if (wifiIsActive()) {
+      if (wifiIsHotspot()) {
         stopWifiSession();
         showShade();
       } else {
         startWifiHotspot(false);
       }
+      break;
+    case UiHit::Kind::Net:
+      showNetworks();
       break;
     default:
       break;
@@ -971,6 +1119,7 @@ void handleExplorerHit(const UiHit& hit) {
 // when only the field content changed.
 bool applyTextHit(const UiHit& hit, bool& textChanged, bool& layoutChanged) {
   if (hit.kind == UiHit::Kind::KeyDone || hit.kind == UiHit::Kind::KeyCancel) uiAcknowledgePress(hit);
+  else if (hit.kind != UiHit::Kind::KeyShift && hit.kind != UiHit::Kind::KeySymbols) uiFlashKey(hit);
   switch (hit.kind) {
     case UiHit::Kind::KeyCancel:
       finishTextEdit(false);
@@ -1042,8 +1191,11 @@ void handleTouch(int x, int y) {
   if (gScreen == Screen::Message) {
     uiAcknowledgePress(uiHitMessage(x, y));
     const bool backToWifi = gMessageReturnWifi;
+    const bool backToNet = gMessageReturnNet;
     gMessageReturnWifi = false;
+    gMessageReturnNet = false;
     if (backToWifi) redrawWifi();
+    else if (backToNet) redrawNet();
     else if (gMessageReturnExplorer) redrawExplorer();
     else showHome();
     return;
@@ -1224,14 +1376,71 @@ void handleTouch(int x, int y) {
     return;
   }
 
+  if (gScreen == Screen::Net) {
+    const UiHit hit = uiHitNet(x, y);
+    uiAcknowledgePress(hit);
+    if (hit.kind == UiHit::Kind::Back) {
+      closeShade();
+    } else if (hit.kind == UiHit::Kind::OpenShade) {
+      showShade();
+    } else if (hit.kind == UiHit::Kind::NetScan) {
+      showNetworks();
+    } else if (hit.kind == UiHit::Kind::NetDisconnect) {
+      fetch_disconnect();
+      wifiStop();
+      redrawNet();
+    } else if (hit.kind == UiHit::Kind::NetJoin) {
+      joinNetwork(hit.index);
+    } else if (hit.kind == UiHit::Kind::WebOpen) {
+      loadWeb(webCurrentUrl(), true);
+    }
+    return;
+  }
+
+  if (gScreen == Screen::Web) {
+    const WebHit hit = webHit(x, y);
+    if (hit.w >= 8) {
+      UiHit flash;
+      flash.rx = hit.x;
+      flash.ry = hit.y;
+      flash.rw = hit.w;
+      flash.rh = hit.h;
+      flash.rr = 12;
+      uiAcknowledgePress(flash);
+    }
+    if (hit.action == WebAction::Shade || hit.action == WebAction::Close) showShade();
+    else if (hit.action == WebAction::Address) openWebAddress();
+    else if (hit.action == WebAction::Reload) loadWeb(webCurrentUrl(), false);
+    else if (hit.action == WebAction::HistBack) {
+      uiDrawProgress("Loading...", 40);
+      webGoBack();
+      webDraw();
+      gScreen = Screen::Web;
+    } else if (hit.action == WebAction::HistFwd) {
+      uiDrawProgress("Loading...", 40);
+      webGoForward();
+      webDraw();
+      gScreen = Screen::Web;
+    }     else if (hit.action == WebAction::Link) {
+      const char* url = webLinkUrl(hit.index);
+      if (url) loadWeb(url, true);
+    } else if (hit.action == WebAction::Field) {
+      openWebField(hit.index);
+    } else if (hit.action == WebAction::Submit) {
+      uiDrawProgress("Searching...", 50);
+      webSubmit(hit.index);
+      webDraw();
+      gScreen = Screen::Web;
+    }
+    return;
+  }
+
   if (gScreen == Screen::Wifi) {
-    const bool active = wifiIsActive();
+    const bool active = wifiIsHotspot();
     const UiHit hit = uiHitWifi(x, y, active);
     uiAcknowledgePress(hit);
     if (hit.kind == UiHit::Kind::Back) {
-      stopWifiSession();
-      gScreen = Screen::Settings;
-      uiDrawSettings(gSpace);
+      closeShade();
     } else if (hit.kind == UiHit::Kind::OpenShade) {
       showShade();
     } else if (hit.kind == UiHit::Kind::WifiStartAp) {
@@ -1282,6 +1491,10 @@ void handleTouch(int x, int y) {
         break;
       case UiHit::Kind::OpenFiles:
         showExplorer(ExplorerMode::Browse, -1);
+        break;
+      case UiHit::Kind::WebOpen:
+        if (wifiIsStation()) loadWeb(webHomeUrl(), true);
+        else showNetworks();
         break;
       case UiHit::Kind::BootSlot:
         refreshSlots();
@@ -1381,7 +1594,7 @@ void loop() {
   static bool bootSleepArmed = true;
   if (!boardPowerPressed()) {
     bootSleepArmed = true;
-  } else if (bootSleepArmed && boardPowerHeldMs() > 1500 && gScreen != Screen::Progress) {
+  } else if (bootSleepArmed && boardPowerHeldMs() > 700 && gScreen != Screen::Progress) {
     bootSleepArmed = false;
     stopWifiSession();
     enterSleepWithScreensaver();
@@ -1414,7 +1627,13 @@ void loop() {
   // A map drag is any finger move on the map, including a slow one. A swipe
   // only counts if it finishes inside 700 ms, so panning uses the held point.
   static bool mapDrag = false;
+  static bool mapDragMoved = false;
+  static int mapOriginX = 0, mapOriginY = 0;
   static int mapX0 = 0, mapY0 = 0, mapX1 = 0, mapY1 = 0;
+  static bool webDrag = false;
+  static bool webDragMoved = false;
+  static int webOriginY = 0;
+  static int webY0 = 0, webY1 = 0;
   static bool brightTracking = false;
   static bool brightArmed = false;
   static bool brightChanged = false;
@@ -1425,6 +1644,7 @@ void loop() {
   bool ignoreTap = false;
 
   if (gScreen != Screen::Gps) mapDrag = false;
+  if (gScreen != Screen::Web) webDrag = false;
   if (gScreen != Screen::Shade) {
     brightTracking = false;
     brightArmed = false;
@@ -1435,16 +1655,51 @@ void loop() {
 
   int hx = 0, hy = 0;
   const bool held = boardTouchHeld(hx, hy);
+  if (gScreen == Screen::Web && held) {
+    if (!webDrag) {
+      if (webContentContains(hx, hy)) {
+        webDrag = true;
+        webDragMoved = false;
+        webOriginY = hy;
+        webY0 = webY1 = hy;
+      }
+    } else {
+      webY1 = hy;
+      // A downward move that starts at the top is the shade pull. Leave it
+      // for the swipe path. Anything else scrolls as the finger moves.
+      const bool shadePull = webOriginY < 120 && hy > webOriginY;
+      const int dy = hy - webY0;
+      if (!shadePull && abs(dy) >= 12) {
+        webScrollBy(dy);
+        webY0 = hy;
+        webDragMoved = true;
+        webDraw(WebPaint::Follow);
+      }
+    }
+  }
   if (gScreen == Screen::Gps && held) {
     if (!mapDrag) {
       if (uiGpsMapContains(hx, hy)) {
         mapDrag = true;
+        mapDragMoved = false;
+        mapOriginX = hx;
+        mapOriginY = hy;
         mapX0 = mapX1 = hx;
         mapY0 = mapY1 = hy;
       }
     } else {
       mapX1 = hx;
       mapY1 = hy;
+      // A downward move that starts at the top is the shade pull.
+      const bool shadePull = mapOriginY < 120 && hy > mapOriginY;
+      const int dx = hx - mapX0;
+      const int dy = hy - mapY0;
+      if (!shadePull && (abs(dx) >= 12 || abs(dy) >= 12)) {
+        if (gpsPan(dx, dy)) uiRedrawGpsMap();
+        mapX0 = hx;
+        mapY0 = hy;
+        mapDragMoved = true;
+      }
     }
   }
   if (gScreen == Screen::Shade && held) {
@@ -1497,27 +1752,16 @@ void loop() {
   bool swipePolled = false;
   if (gScreen == Screen::Gps && mapDrag && !held) {
     swipePolled = true;
-    const bool gotSwipe = boardPollSwipe(x0, y0, x1, y1);
-    if (!gotSwipe) {
-      x0 = mapX0;
-      y0 = mapY0;
-      x1 = mapX1;
-      y1 = mapY1;
-    }
+    boardPollSwipe(x0, y0, x1, y1);
+    const int dx = mapX1 - mapOriginX;
+    const int dy = mapY1 - mapOriginY;
     mapDrag = false;
-    const int dx = x1 - x0;
-    const int dy = y1 - y0;
-    const bool pullDown = y0 < 120 && dy > 80 && abs(dy) > abs(dx);
+    const bool pullDown = mapOriginY < 120 && dy > 80 && abs(dy) > abs(dx);
     if (pullDown) {
       showShade();
       return;
     }
-    if ((abs(dx) >= 36 || abs(dy) >= 36) && uiGpsMapContains(x0, y0)) {
-      if (gpsPan(dx, dy)) {
-        uiDrawGps();
-        ignoreTap = true;
-      }
-    }
+    if (mapDragMoved) ignoreTap = true;
   }
 
   if (!swipePolled && boardPollSwipe(x0, y0, x1, y1)) {
@@ -1529,6 +1773,7 @@ void loop() {
     const bool canShade = gScreen == Screen::Home || gScreen == Screen::Explorer ||
                           gScreen == Screen::TextEdit || gScreen == Screen::Settings ||
                           gScreen == Screen::Hardware || gScreen == Screen::Wifi ||
+                          gScreen == Screen::Net || gScreen == Screen::Web ||
                           gScreen == Screen::Gps;
     if (canShade && pullDown) {
       showShade();
@@ -1576,6 +1821,12 @@ void loop() {
     canvasSetHoldCleanRefresh(false);
   }
 
+  if (gScreen == Screen::Web && webDrag && !held) {
+    const int dy = webY1 - webOriginY;
+    webDrag = false;
+    if (webDragMoved || abs(dy) >= 24) ignoreTap = true;
+  }
+
   int x = 0, y = 0;
   if (ignoreTap) {
     boardPollTouch(x, y);
@@ -1591,7 +1842,9 @@ void loop() {
     const uint32_t now = millis();
     if (lastGpsDraw == 0) lastGpsDraw = now;
     if (polled.fixChanged || (polled.sentence && now - lastGpsDraw > 10000)) {
-      uiDrawGps();
+      const bool mapMoved = gpsMapFollowMoved();
+      uiRedrawGpsStatus();
+      if (mapMoved) uiRedrawGpsMap();
       lastGpsDraw = now;
     }
   }
@@ -1602,7 +1855,8 @@ void loop() {
   if (gScreen != Screen::ImageView && boardPowerConnectionChanged()) {
     const bool grabber = gScreen == Screen::Home || gScreen == Screen::Explorer ||
                          gScreen == Screen::Settings || gScreen == Screen::Hardware ||
-                         gScreen == Screen::Wifi || gScreen == Screen::TextEdit ||
+                         gScreen == Screen::Wifi || gScreen == Screen::Net ||
+                         gScreen == Screen::Web || gScreen == Screen::TextEdit ||
                          gScreen == Screen::Gps;
     if (gScreen != Screen::Progress) canvasRequestCleanRefresh();
     uiRedrawStatusBar(gSpace, grabber);

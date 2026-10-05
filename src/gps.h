@@ -46,6 +46,8 @@ bool gpsZoomIn();
 bool gpsZoomOut();
 // Finger movement in screen pixels. The map follows the finger.
 bool gpsPan(int dx, int dy);
+// True when follow mode would slide the map onto a newer fix.
+bool gpsMapFollowMoved();
 // Put the map back on the fix. False when there is no position yet.
 bool gpsRecenter();
 

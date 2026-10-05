@@ -55,6 +55,18 @@ uint32_t gCleanDueMs = 0;
 
 constexpr uint32_t kFullArea = static_cast<uint32_t>(kScreenW) * kScreenH;
 
+struct WindowJob {
+  bool pending = false;
+  bool clean = false;
+  CanvasRect rect{};
+};
+
+WindowJob gFastJob;
+WindowJob gKeyRestore;
+bool gLocalCleanArmed = false;
+CanvasRect gLocalCleanRect{};
+uint32_t gLocalCleanDue = 0;
+
 const char* intentName(CanvasRefreshIntent intent) {
   switch (intent) {
     case CanvasRefreshIntent::InteractiveLocal: return "local";
@@ -88,6 +100,20 @@ CanvasRect toPhysicalRect(CanvasRect logical) {
   return {logical.y, kPhysH - logical.x - logical.w, logical.h, logical.w};
 }
 
+bool flushWindowJob() {
+  if (!gFastJob.pending) return true;
+  if (display.windowRefreshBusy()) return false;
+  const CanvasRect native = toPhysicalRect(gFastJob.rect);
+  if (native.w <= 0 || native.h <= 0) {
+    gFastJob.pending = false;
+    return true;
+  }
+  const auto mode = gFastJob.clean ? EInkDisplay::HALF_REFRESH : EInkDisplay::FAST_REFRESH;
+  if (!display.displayWindowDeferred(native.x, native.y, native.w, native.h, mode)) return false;
+  gFastJob.pending = false;
+  return true;
+}
+
 void clearGrayPlanes() {
   const size_t bytes = display.getBufferSize();
   if (gGrayLsb) memset(gGrayLsb, 0, bytes);
@@ -96,6 +122,9 @@ void clearGrayPlanes() {
 }
 
 void presentCleanFrame(const char* reason) {
+  gFastJob.pending = false;
+  gFastJob.clean = false;
+  gKeyRestore.pending = false;
   esp_task_wdt_reset();
   const uint32_t started = millis();
   const bool gray = gGrayUsed && gGrayLsb && gGrayMsb && display.supportsGrayFrame();
@@ -199,6 +228,9 @@ int canvasTitleCellH() {
 }
 
 void canvasPresent(EInkDisplay::RefreshMode mode) {
+  gFastJob.pending = false;
+  gFastJob.clean = false;
+  gKeyRestore.pending = false;
   esp_task_wdt_reset();
   const uint32_t started = millis();
   const bool clean = mode != EInkDisplay::FAST_REFRESH;
@@ -227,6 +259,9 @@ void canvasPresentAuto() {
 }
 
 void canvasPresentFor(CanvasRefreshIntent intent, CanvasRect dirty) {
+  gFastJob.pending = false;
+  gFastJob.clean = false;
+  gKeyRestore.pending = false;
   dirty = clippedRect(dirty);
   if (dirty.w <= 0 || dirty.h <= 0) return;
 
@@ -281,7 +316,89 @@ void canvasPresentFor(CanvasRefreshIntent intent, CanvasRect dirty) {
       static_cast<unsigned long>(scheduleClean ? settleMs : 0));
 }
 
+void canvasPresentWindowFast(CanvasRect dirty) {
+  dirty = clippedRect(dirty);
+  if (dirty.w <= 0 || dirty.h <= 0) return;
+  // The newest frame wins. A full-screen settle queued for the previous
+  // screen would flash over this interaction, so drop it.
+  gCleanPending = false;
+  gForceClean = false;
+  gFastJob.pending = true;
+  gFastJob.clean = false;
+  gFastJob.rect = dirty;
+  flushWindowJob();
+}
+
+bool canvasFlashInvertedKey(CanvasRect dirty) {
+  dirty = clippedRect(dirty);
+  if (dirty.w <= 0 || dirty.h <= 0) return false;
+  if (display.windowRefreshBusy() || gFastJob.pending) return false;
+  const bool sameKey = gKeyRestore.pending && gKeyRestore.rect.x == dirty.x && gKeyRestore.rect.y == dirty.y &&
+                       gKeyRestore.rect.w == dirty.w && gKeyRestore.rect.h == dirty.h;
+  if (gKeyRestore.pending && !sameKey) {
+    gFastJob.pending = true;
+    gFastJob.clean = false;
+    gFastJob.rect = gKeyRestore.rect;
+    if (!flushWindowJob()) {
+      gFastJob.pending = false;
+      return false;
+    }
+    gKeyRestore.pending = false;
+    if (display.windowRefreshBusy()) return false;
+  }
+  gFastJob.pending = true;
+  gFastJob.clean = false;
+  gFastJob.rect = dirty;
+  if (!flushWindowJob()) {
+    gFastJob.pending = false;
+    return false;
+  }
+  return true;
+}
+
+void canvasArmKeyRestore(CanvasRect dirty) {
+  dirty = clippedRect(dirty);
+  if (dirty.w <= 0 || dirty.h <= 0) return;
+  gKeyRestore.pending = true;
+  gKeyRestore.clean = false;
+  gKeyRestore.rect = dirty;
+}
+
+void canvasArmLocalClean(CanvasRect dirty, uint32_t delayMs) {
+  dirty = clippedRect(dirty);
+  if (dirty.w <= 0 || dirty.h <= 0) return;
+  gLocalCleanArmed = true;
+  gLocalCleanRect = dirty;
+  gLocalCleanDue = millis() + delayMs;
+}
+
+void canvasDisarmLocalClean() { gLocalCleanArmed = false; }
+
+bool canvasLocalCleanArmed() { return gLocalCleanArmed; }
+
 void canvasServiceRefresh() {
+  flushWindowJob();
+  if (gKeyRestore.pending && !gFastJob.pending && !display.windowRefreshBusy()) {
+    gFastJob.pending = true;
+    gFastJob.clean = false;
+    gFastJob.rect = gKeyRestore.rect;
+    if (flushWindowJob()) gKeyRestore.pending = false;
+    else gFastJob.pending = false;
+  }
+  // The text-box scrub still runs while a full-screen scrub is held. It only
+  // covers the rectangle that was changing.
+  if (gLocalCleanArmed && !gFastJob.pending && static_cast<int32_t>(millis() - gLocalCleanDue) >= 0 &&
+      !display.windowRefreshBusy()) {
+    gFastJob.pending = true;
+    gFastJob.clean = true;
+    gFastJob.rect = gLocalCleanRect;
+    if (flushWindowJob()) gLocalCleanArmed = false;
+    else {
+      gFastJob.pending = false;
+      gFastJob.clean = false;
+    }
+  }
+  if (gFastJob.pending || display.windowRefreshBusy()) return;
   if (!gCleanPending || gHoldCleanRefresh) return;
   if (static_cast<int32_t>(millis() - gCleanDueMs) < 0) return;
   presentCleanFrame("settle");

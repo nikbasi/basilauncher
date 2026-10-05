@@ -15,8 +15,14 @@ constexpr const char* kDefaultApPass = "basilauncher";
 constexpr uint8_t kApChannel = 1;
 DNSServer* gDns = nullptr;
 WifiMode gMode = WifiMode::Off;
-char gSavedSsid[33] = {};
-char gSavedPass[65] = {};
+struct SavedNet {
+  char ssid[33];
+  char pass[65];
+};
+
+constexpr int kSavedMax = 8;
+SavedNet gSaved[kSavedMax];
+int gSavedCount = 0;
 char gApPass[64] = {};
 bool gCredsLoaded = false;
 bool gApLoaded = false;
@@ -43,22 +49,47 @@ void loadApPass() {
   if (passwordOk(pass.c_str())) snprintf(gApPass, sizeof(gApPass), "%s", pass.c_str());
 }
 
+void persistNets() {
+  Preferences prefs;
+  if (!prefs.begin("basil", false)) return;
+  if (gSavedCount <= 0) {
+    prefs.remove("wifiNets");
+    prefs.remove("wifiN");
+    prefs.remove("wifiSsid");
+    prefs.remove("wifiPass");
+  } else {
+    prefs.putUChar("wifiN", static_cast<uint8_t>(gSavedCount));
+    prefs.putBytes("wifiNets", gSaved, sizeof(SavedNet) * static_cast<size_t>(gSavedCount));
+    prefs.putString("wifiSsid", gSaved[0].ssid);
+    prefs.putString("wifiPass", gSaved[0].pass);
+  }
+  prefs.end();
+}
+
 void loadCreds() {
   if (gCredsLoaded) return;
   gCredsLoaded = true;
-  gSavedSsid[0] = 0;
-  gSavedPass[0] = 0;
+  gSavedCount = 0;
   Preferences prefs;
   if (!prefs.begin("basil", true)) return;
-  const String ssid = prefs.getString("wifiSsid", "");
-  const String pass = prefs.getString("wifiPass", "");
+  const uint8_t n = prefs.getUChar("wifiN", 0);
+  bool migrated = false;
+  if (n > 0 && n <= kSavedMax) {
+    const size_t got = prefs.getBytes("wifiNets", gSaved, sizeof(gSaved));
+    if (got == sizeof(SavedNet) * n) gSavedCount = n;
+  }
+  if (gSavedCount == 0) {
+    const String ssid = prefs.getString("wifiSsid", "");
+    const String pass = prefs.getString("wifiPass", "");
+    if (ssid.length() > 0 && ssid.length() < sizeof(gSaved[0].ssid) && pass.length() < sizeof(gSaved[0].pass)) {
+      snprintf(gSaved[0].ssid, sizeof(gSaved[0].ssid), "%s", ssid.c_str());
+      snprintf(gSaved[0].pass, sizeof(gSaved[0].pass), "%s", pass.c_str());
+      gSavedCount = 1;
+      migrated = true;
+    }
+  }
   prefs.end();
-  if (ssid.length() > 0 && ssid.length() < sizeof(gSavedSsid)) {
-    snprintf(gSavedSsid, sizeof(gSavedSsid), "%s", ssid.c_str());
-  }
-  if (pass.length() < sizeof(gSavedPass)) {
-    snprintf(gSavedPass, sizeof(gSavedPass), "%s", pass.c_str());
-  }
+  if (migrated) persistNets();
 }
 
 void stopDns() {
@@ -97,37 +128,52 @@ bool wifiSetApPassword(const char* pass) {
 
 bool wifiHasSavedNetwork() {
   loadCreds();
-  return gSavedSsid[0] != 0;
+  return gSavedCount > 0 && gSaved[0].ssid[0] != 0;
 }
 
 void wifiGetSavedSsid(char* out, size_t outLen) {
   loadCreds();
   if (!out || outLen == 0) return;
-  snprintf(out, outLen, "%s", gSavedSsid);
+  snprintf(out, outLen, "%s", gSavedCount > 0 ? gSaved[0].ssid : "");
+}
+
+bool wifiLookupPassword(const char* ssid, char* out, size_t outLen) {
+  loadCreds();
+  if (!ssid || !ssid[0] || !out || outLen == 0) return false;
+  out[0] = 0;
+  for (int i = 0; i < gSavedCount; ++i) {
+    if (strcmp(gSaved[i].ssid, ssid) != 0) continue;
+    if (!gSaved[i].pass[0]) return false;
+    snprintf(out, outLen, "%s", gSaved[i].pass);
+    return true;
+  }
+  return false;
 }
 
 void wifiSaveNetwork(const char* ssid, const char* pass) {
   if (!ssid || !ssid[0]) return;
-  snprintf(gSavedSsid, sizeof(gSavedSsid), "%.32s", ssid);
-  snprintf(gSavedPass, sizeof(gSavedPass), "%.64s", pass ? pass : "");
+  loadCreds();
+  SavedNet next[kSavedMax];
+  memset(next, 0, sizeof(next));
+  snprintf(next[0].ssid, sizeof(next[0].ssid), "%.32s", ssid);
+  snprintf(next[0].pass, sizeof(next[0].pass), "%.64s", pass ? pass : "");
+  int keep = 1;
+  for (int i = 0; i < gSavedCount && keep < kSavedMax; ++i) {
+    if (strcmp(gSaved[i].ssid, next[0].ssid) == 0) continue;
+    next[keep++] = gSaved[i];
+  }
+  memcpy(gSaved, next, sizeof(gSaved));
+  gSavedCount = keep;
   gCredsLoaded = true;
-  Preferences prefs;
-  if (!prefs.begin("basil", false)) return;
-  prefs.putString("wifiSsid", gSavedSsid);
-  prefs.putString("wifiPass", gSavedPass);
-  prefs.end();
-  Serial.printf("WiFi: saved network '%s'\n", gSavedSsid);
+  persistNets();
+  Serial.printf("WiFi: saved network '%s' (%d remembered)\n", gSaved[0].ssid, gSavedCount);
 }
 
 void wifiClearSavedNetwork() {
-  gSavedSsid[0] = 0;
-  gSavedPass[0] = 0;
+  gSavedCount = 0;
+  memset(gSaved, 0, sizeof(gSaved));
   gCredsLoaded = true;
-  Preferences prefs;
-  if (!prefs.begin("basil", false)) return;
-  prefs.remove("wifiSsid");
-  prefs.remove("wifiPass");
-  prefs.end();
+  persistNets();
 }
 
 bool wifiStartSoftAp() {
@@ -177,24 +223,24 @@ bool wifiStartSoftAp() {
 
 bool wifiStartStation(uint32_t timeoutMs) {
   loadCreds();
-  if (!gSavedSsid[0]) return false;
+  if (gSavedCount <= 0 || !gSaved[0].ssid[0]) return false;
   wifiStop();
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  WiFi.begin(gSavedSsid, gSavedPass[0] ? gSavedPass : nullptr);
+  WiFi.begin(gSaved[0].ssid, gSaved[0].pass[0] ? gSaved[0].pass : nullptr);
   const uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeoutMs) {
     delay(100);
   }
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.printf("WiFi: STA failed for '%s'\n", gSavedSsid);
+    Serial.printf("WiFi: STA failed for '%s'\n", gSaved[0].ssid);
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
     gMode = WifiMode::Off;
     return false;
   }
   gMode = WifiMode::Station;
-  Serial.printf("WiFi: STA '%s' ip=%s\n", gSavedSsid, WiFi.localIP().toString().c_str());
+  Serial.printf("WiFi: STA '%s' ip=%s\n", gSaved[0].ssid, WiFi.localIP().toString().c_str());
   return true;
 }
 
@@ -209,9 +255,84 @@ void wifiStop() {
   gMode = WifiMode::Off;
 }
 
+bool wifiJoin(const char* ssid, const char* pass, uint32_t timeoutMs) {
+  if (!ssid || !ssid[0]) return false;
+  wifiSaveNetwork(ssid, pass ? pass : "");
+  return wifiStartStation(timeoutMs);
+}
+
+int wifiScan(WifiAp* out, int maxOut) {
+  if (!out || maxOut <= 0) return 0;
+  const bool keepStation = gMode == WifiMode::Station && WiFi.status() == WL_CONNECTED;
+  if (gMode == WifiMode::SoftAp) wifiStop();
+  WiFi.persistent(false);
+  if (WiFi.getMode() != WIFI_STA && WiFi.getMode() != WIFI_AP_STA) {
+    WiFi.mode(WIFI_STA);
+    delay(80);
+  }
+  const int found = WiFi.scanNetworks(false, true);
+  int n = 0;
+  if (found > 0) {
+    for (int i = 0; i < found; ++i) {
+      const String ssid = WiFi.SSID(i);
+      if (ssid.length() == 0 || ssid.length() >= sizeof(out[0].ssid)) continue;
+      const int rssi = WiFi.RSSI(i);
+      const bool open = WiFi.encryptionType(i) == WIFI_AUTH_OPEN;
+      int slot = -1;
+      for (int j = 0; j < n; ++j) {
+        if (strcmp(out[j].ssid, ssid.c_str()) == 0) {
+          slot = j;
+          break;
+        }
+      }
+      if (slot >= 0) {
+        if (rssi > out[slot].rssi) {
+          out[slot].rssi = rssi;
+          out[slot].open = open;
+        }
+        continue;
+      }
+      if (n >= maxOut) {
+        int weakest = 0;
+        for (int j = 1; j < n; ++j) {
+          if (out[j].rssi < out[weakest].rssi) weakest = j;
+        }
+        if (rssi <= out[weakest].rssi) continue;
+        slot = weakest;
+      } else {
+        slot = n++;
+      }
+      snprintf(out[slot].ssid, sizeof(out[slot].ssid), "%s", ssid.c_str());
+      out[slot].rssi = rssi;
+      out[slot].open = open;
+    }
+  }
+  WiFi.scanDelete();
+  for (int a = 1; a < n; ++a) {
+    const WifiAp key = out[a];
+    int b = a;
+    while (b > 0 && out[b - 1].rssi < key.rssi) {
+      out[b] = out[b - 1];
+      --b;
+    }
+    out[b] = key;
+  }
+  if (!keepStation && WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    gMode = WifiMode::Off;
+  }
+  Serial.printf("WiFi: scan %d\n", n);
+  return n;
+}
+
 bool wifiIsActive() {
   return gMode != WifiMode::Off;
 }
+
+bool wifiIsHotspot() { return gMode == WifiMode::SoftAp; }
+
+bool wifiIsStation() { return gMode == WifiMode::Station && WiFi.status() == WL_CONNECTED; }
 
 WifiMode wifiCurrentMode() {
   return gMode;

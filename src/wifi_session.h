@@ -19,6 +19,8 @@ bool wifiHasSavedNetwork();
 void wifiSaveNetwork(const char* ssid, const char* pass);
 void wifiClearSavedNetwork();
 void wifiGetSavedSsid(char* out, size_t outLen);
+// True when this SSID has a stored passphrase. Newest networks stay first.
+bool wifiLookupPassword(const char* ssid, char* out, size_t outLen);
 
 // Start WPA2 SoftAP "Basilauncher". Returns false on failure.
 bool wifiStartSoftAp();
@@ -30,8 +32,23 @@ bool wifiSetApPassword(const char* pass);
 // Join saved network (blocking up to timeoutMs). Returns false on failure.
 bool wifiStartStation(uint32_t timeoutMs = 20000);
 
+// Save these credentials, then join. An empty password is an open network.
+bool wifiJoin(const char* ssid, const char* pass, uint32_t timeoutMs = 20000);
+
+struct WifiAp {
+  char ssid[33];
+  int rssi;
+  bool open;
+};
+
+// Blocking scan. Keeps an existing station connection. Returns how many
+// entries were written, strongest first.
+int wifiScan(WifiAp* out, int maxOut);
+
 void wifiStop();
 bool wifiIsActive();
+bool wifiIsHotspot();
+bool wifiIsStation();
 WifiMode wifiCurrentMode();
 WifiStatus wifiGetStatus();
 

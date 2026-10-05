@@ -568,6 +568,11 @@ bool gpsHasMaps() { return gSawMaps; }
 bool gpsZoomIn() { return zoomToward(1); }
 bool gpsZoomOut() { return zoomToward(-1); }
 
+bool gpsMapFollowMoved() {
+  if (!gFollow || !gView.hasPos) return false;
+  return fabs(gCenterLat - gView.lat) > 1e-7 || fabs(gCenterLon - gView.lon) > 1e-7;
+}
+
 bool gpsPan(int dx, int dy) {
   if (dx == 0 && dy == 0) return false;
   gFollow = false;

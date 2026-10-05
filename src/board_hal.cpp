@@ -31,6 +31,7 @@ bool gRtcOk = false;
 uint8_t gBrightness = 40;
 bool gLightOn = false;
 bool gLightHw = false;
+uint32_t gLastDuty = 0;
 int gSleepAfterMin = 10;
 BoardPowerInfo gPowerCache;
 bool gChargingKnown = false;
@@ -40,33 +41,66 @@ bool gExternalPower = false;
 uint32_t gLastPowerSampleMs = 0;
 constexpr uint32_t kPowerSampleIntervalMs = 5000;
 
-// LilyGO T5 S3 Pro: PT4103 EN on GPIO11, 1 kHz / 12-bit (matches BoardConfig).
-constexpr int kFlGpio = 11;
-constexpr int kFlFreqHz = 1000;
-constexpr int kFlResBits = 12;
+// Same perceptual curve and PT4103 floors as CrossPoint's FrontlightManager.
+// gamma 1.6554: round(65535 * (pct/100)^1.6554). The hold floor lifts every
+// non-zero step onto the boost's minimum on-time, and a short kick at the
+// start floor ignites a dim level the converter cannot start from.
+// NVS namespace "basil" keys bright / lightOn / brightGen are the exchange
+// with CrossPoint. brightGen 0 is an unversioned legacy value.
+constexpr uint16_t kGamma[101] = {
+    0,     32,    101,   197,   318,   460,   622,   803,   1001,  1217,  1449,  1697,  1960,  2237,  2529,
+    2835,  3155,  3488,  3834,  4193,  4565,  4949,  5345,  5753,  6173,  6604,  7047,  7502,  7967,  8444,
+    8931,  9429,  9938,  10457, 10987, 11527, 12077, 12638, 13208, 13789, 14379, 14979, 15588, 16208, 16836,
+    17474, 18122, 18779, 19445, 20120, 20804, 21497, 22200, 22911, 23631, 24360, 25097, 25843, 26598, 27362,
+    28134, 28914, 29703, 30500, 31306, 32120, 32942, 33772, 34611, 35457, 36312, 37175, 38045, 38924, 39811,
+    40705, 41608, 42518, 43436, 44361, 45295, 46236, 47185, 48141, 49105, 50076, 51055, 52042, 53036, 54037,
+    55046, 56062, 57086, 58117, 59155, 60200, 61253, 62313, 63380, 64454, 65535};
 
-uint32_t brightnessToDuty(uint8_t percent) {
-  if (percent == 0) return 0;
+uint32_t dutyForPercent(uint8_t percent, uint32_t full, uint16_t holdPermille) {
+  if (percent == 0 || full == 0) return 0;
   if (percent > 100) percent = 100;
-  const uint32_t maxDuty = (1u << kFlResBits) - 1u;
-  // Mild gamma so low % stays usable on the boost converter.
-  const uint32_t p = percent;
-  return (maxDuty * p * p) / 10000u;
+  uint32_t duty = (full * kGamma[percent] + 32767u) / 65535u;
+  if (duty == 0) duty = 1;
+  const uint32_t holdFloor = (full * holdPermille + 500u) / 1000u;
+  if (holdFloor > 0) {
+    duty = holdFloor + static_cast<uint32_t>((static_cast<uint64_t>(duty) * (full - holdFloor)) / full);
+  }
+  return duty;
 }
 
 void applyFrontlight() {
   if (!gLightHw) return;
-  if (!gLightOn || gBrightness == 0) {
-    ledcWrite(kFlGpio, 0);
-  } else {
-    ledcWrite(kFlGpio, brightnessToDuty(gBrightness));
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  const uint32_t full = (1u << fl.pwmResolutionBits) - 1u;
+  const uint32_t duty =
+      (gLightOn && gBrightness > 0) ? dutyForPercent(gBrightness, full, fl.minHoldPermille) : 0;
+  const uint32_t startFloor = (full * fl.minStartPermille + 500u) / 1000u;
+  auto drive = [&](uint32_t logical) {
+    const uint32_t physical = fl.activeHigh ? logical : full - logical;
+    ledcWrite(fl.gpio, physical);
+  };
+  if (gLastDuty == 0 && duty > 0 && startFloor > 0 && duty < startFloor) {
+    drive(startFloor);
+    delay(30);
   }
+  gLastDuty = duty;
+  drive(duty);
 }
 
 void persistLight() {
   if (!gPrefs.begin("basil", false)) return;
+  const uint8_t prevBright = gPrefs.isKey("bright") ? gPrefs.getUChar("bright", 0) : 0xFF;
+  const bool prevOn = gPrefs.getBool("lightOn", false);
+  uint32_t gen = gPrefs.getUInt("brightGen", 0);
+  if (prevBright == gBrightness && prevOn == gLightOn && gen > 0) {
+    gPrefs.end();
+    return;
+  }
+  gen += 1;
+  if (gen == 0) gen = 1;
   gPrefs.putUChar("bright", gBrightness);
   gPrefs.putBool("lightOn", gLightOn);
+  gPrefs.putUInt("brightGen", gen);
   gPrefs.end();
 }
 
@@ -162,14 +196,19 @@ void boardInitClock() {
 }
 
 void boardInitFrontlight() {
-  gpio_hold_dis(static_cast<gpio_num_t>(kFlGpio));
-  gLightHw = ledcAttach(kFlGpio, kFlFreqHz, kFlResBits);
+  const auto& fl = BoardConfig::ACTIVE.frontlight;
+  if (fl.gpio >= 0) {
+    gpio_hold_dis(static_cast<gpio_num_t>(fl.gpio));
+    gLightHw = ledcAttach(fl.gpio, fl.pwmFrequency, fl.pwmResolutionBits);
+  }
   int cleanEvery = 8;
   int sleepAfter = 10;
   int uiText = 1;
+  uint32_t brightGen = 0;
   if (gPrefs.begin("basil", true)) {
     gBrightness = gPrefs.getUChar("bright", 40);
     gLightOn = gPrefs.getBool("lightOn", false);
+    brightGen = gPrefs.getUInt("brightGen", 0);
     cleanEvery = static_cast<int>(gPrefs.getUChar("cleanEv", 8));
     sleepAfter = static_cast<int>(gPrefs.getUChar("sleepMin", 10));
     uiText = static_cast<int>(gPrefs.getUChar("uiText", 1));
@@ -182,9 +221,9 @@ void boardInitFrontlight() {
   if (gSleepAfterMin < 0) gSleepAfterMin = 0;
   if (gSleepAfterMin > 60) gSleepAfterMin = 60;
   applyFrontlight();
-  Serial.printf("Frontlight: hw=%d on=%d bright=%u cleanEvery=%d sleepAfter=%d uiText=%d\n",
-                gLightHw ? 1 : 0, gLightOn ? 1 : 0, gBrightness, canvasCleanEvery(), gSleepAfterMin,
-                canvasUiTextSize());
+  Serial.printf("Frontlight: hw=%d on=%d bright=%u gen=%lu cleanEvery=%d sleepAfter=%d uiText=%d\n",
+                gLightHw ? 1 : 0, gLightOn ? 1 : 0, gBrightness, static_cast<unsigned long>(brightGen),
+                canvasCleanEvery(), gSleepAfterMin, canvasUiTextSize());
 }
 
 int boardCleanEvery() { return canvasCleanEvery(); }
@@ -226,11 +265,13 @@ void boardMarkFactoryValid() {
 
 void boardPrepareDeepSleep() {
   if (gLightHw) {
-    ledcWrite(kFlGpio, 0);
-    ledcDetach(kFlGpio);
-    pinMode(kFlGpio, OUTPUT);
-    digitalWrite(kFlGpio, LOW);
-    gpio_hold_en(static_cast<gpio_num_t>(kFlGpio));
+    const int pin = BoardConfig::ACTIVE.frontlight.gpio;
+    ledcWrite(pin, 0);
+    ledcDetach(pin);
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+    gpio_hold_en(static_cast<gpio_num_t>(pin));
+    gLastDuty = 0;
   }
   (void)BoardT5S3::parkEpdPowerForSleep();
 }

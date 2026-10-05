@@ -1,6 +1,7 @@
 #pragma once
 
 #include "apps_scan.h"
+#include "wifi_session.h"
 #include <vector>
 
 enum class Screen {
@@ -9,6 +10,8 @@ enum class Screen {
   Settings,
   Hardware,
   Wifi,
+  Net,
+  Web,
   Gps,
   Shade,
   Progress,
@@ -20,7 +23,7 @@ enum class Screen {
 
 enum class ExplorerMode { Browse, Install };
 
-enum class TextEditMode { EditFile, Rename, NewFolder, NewFile, ApPassword };
+enum class TextEditMode { EditFile, Rename, NewFolder, NewFile, ApPassword, StaPassword, WebUrl, WebField };
 
 struct UiHit {
   enum class Kind {
@@ -32,6 +35,11 @@ struct UiHit {
     Settings,
     Hardware,
     Wifi,
+    Net,
+    NetScan,
+    NetJoin,
+    NetDisconnect,
+    WebOpen,
     SetSleep,
     WifiStartAp,
     WifiStop,
@@ -143,9 +151,9 @@ void uiDrawImageViewHint(bool saved = false);  // Close / Set sleep chips after 
 UiHit uiHitImageView(int x, int y);
 void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shift,
                     TextEditMode mode, bool scrub = false);
-// Fast path: rewrite only the text field in the existing framebuffer (keyboard
-// unchanged) and FAST-present. Call after char/space/backspace when layout is
-// unchanged.
+// Fast path: rewrite only the text box in the existing framebuffer (keyboard
+// unchanged) and queue a fast window. Returns without waiting for the panel.
+// Call after char/space/backspace when layout is unchanged.
 void uiRedrawTextEditField(const char* text, TextEditMode mode);
 
 UiHit uiHitHome(int x, int y);
@@ -154,9 +162,15 @@ UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool
 UiHit uiHitSettings(int x, int y);
 UiHit uiHitHardware(int x, int y);
 void uiDrawGps();
+// Map rectangle only. Fast while the finger is moving; one clean after it stops.
+void uiRedrawGpsMap();
+// Fix and satellite lines. Leaves the map glass alone when the view did not move.
+void uiRedrawGpsStatus();
 UiHit uiHitGps(int x, int y);
 bool uiGpsMapContains(int x, int y);
 UiHit uiHitWifi(int x, int y, bool active);
+void uiDrawNet(const FlashSpace& space, const WifiStatus& status, const WifiAp* aps, int count);
+UiHit uiHitNet(int x, int y);
 UiHit uiHitShade(int x, int y);
 UiHit uiHitConfirm(int x, int y);
 UiHit uiHitTextEdit(int x, int y, bool symbols, bool shift);
@@ -164,6 +178,8 @@ UiHit uiHitTextEdit(int x, int y, bool symbols, bool shift);
 // Paint the hit control black and push only that patch. The following redraw
 // replaces it. Empty rects and near-full patches are ignored.
 void uiAcknowledgePress(const UiHit& hit);
+// Invert one on-screen key and queue it back to normal. Does not wait.
+void uiFlashKey(const UiHit& hit);
 
 // Brightness track geometry for live drag.
 void uiShadeBrightnessTrack(int& x, int& y, int& w, int& h);

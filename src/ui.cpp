@@ -129,6 +129,7 @@ struct ShadeGeom {
   int tileW = 0;
   int tileH = 0;
   int icon = 0;
+  int netX = 0;
   int gpsX = 0;
   int settingsX = 0;
   int frontRuleY = 0;
@@ -149,13 +150,15 @@ ShadeGeom shadeGeom() {
   g.titleY = y;
   y += canvasTextHeight(kTitle) + 12;
   g.icon = 72;
-  const int labelW = std::max(canvasTextWidth("Wi-Fi", kBody),
-                              std::max(canvasTextWidth("GPS", kBody), canvasTextWidth("Settings", kBody)));
+  const int labelW = std::max(canvasTextWidth("Transfer", kBody),
+                              std::max(canvasTextWidth("Wi-Fi", kBody),
+                                       std::max(canvasTextWidth("GPS", kBody), canvasTextWidth("Settings", kBody))));
   g.tileW = std::max(g.icon, labelW + 8);
   g.tileH = g.icon + 4 + canvasTextHeight(kBody);
   g.tileX = kPad + 8;
-  const int gap = 16;
-  g.gpsX = g.tileX + g.tileW + gap;
+  const int gap = 12;
+  g.netX = g.tileX + g.tileW + gap;
+  g.gpsX = g.netX + g.tileW + gap;
   g.settingsX = g.gpsX + g.tileW + gap;
   g.tileY = y;
   y += g.tileH + 14;
@@ -510,6 +513,15 @@ static void markHit(UiHit& hit, int x, int y, int w, int h, int radius = kBtnRad
   hit.rr = radius;
 }
 
+void uiFlashKey(const UiHit& hit) {
+  if (hit.rw < 8 || hit.rh < 8) return;
+  const CanvasRect key{hit.rx, hit.ry, hit.rw, hit.rh};
+  canvasInvertRoundRect(hit.rx, hit.ry, hit.rw, hit.rh, hit.rr);
+  const bool shown = canvasFlashInvertedKey(key);
+  canvasInvertRoundRect(hit.rx, hit.ry, hit.rw, hit.rh, hit.rr);
+  if (shown) canvasArmKeyRestore(key);
+}
+
 void uiAcknowledgePress(const UiHit& hit) {
   if (hit.rw < 8 || hit.rh < 8) return;
   // A window this large is promoted to a full fast refresh, which parks white
@@ -562,11 +574,11 @@ void uiDrawSplash() {
   canvasPresent(EInkDisplay::FULL_REFRESH);
 }
 
-void filesChipRect(int& x, int& y, int& w, int& h) {
-  // Full footer height, wide tap target — one tap should open Files reliably.
-  x = kPad;
+void homeChipRect(int index, int& x, int& y, int& w, int& h) {
+  constexpr int chipW = 148;
+  x = kPad + index * (chipW + 12);
   y = kScreenH - kHomeFooterH;
-  w = kScreenW - 2 * kPad - 140;  // leave room for the free-space label
+  w = chipW;
   h = kHomeFooterH;
 }
 
@@ -582,9 +594,12 @@ void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space, bool 
   canvasDrawLine(0, kScreenH - kHomeFooterH, kScreenW - 1, kScreenH - kHomeFooterH, true);
 
   int fx, fy, fw, fh;
-  filesChipRect(fx, fy, fw, fh);
+  homeChipRect(0, fx, fy, fw, fh);
   // Inset the drawn chip slightly so it doesn't collide with the footer rule.
-  drawChromeOutlineBtn(fx, fy + 8, std::min(fw, 160), fh - 16, "Files");
+  drawChromeOutlineBtn(fx, fy + 8, fw, fh - 16, "Files");
+  int wx, wy, ww, wh;
+  homeChipRect(1, wx, wy, ww, wh);
+  drawChromeOutlineBtn(wx, wy + 8, ww, wh - 16, "Web");
 
   char freeBuf[24], freeLine[40];
   appsFormatBytes(space.guestFree, freeBuf, sizeof(freeBuf));
@@ -744,6 +759,13 @@ void drawIconGps(int cx, int cy, bool ink) {
   canvasDrawLine(cx - 10, cy, cx + 10, cy, ink);
   canvasDrawLine(cx, cy - 10, cx, cy + 10, ink);
   canvasFillRect(cx - 2, cy - 2, 5, 5, ink);
+}
+
+void drawIconTransfer(int cx, int cy, bool ink) {
+  canvasDrawRect(cx - 16, cy - 2, 32, 18, ink);
+  canvasDrawLine(cx, cy - 16, cx, cy + 2, ink);
+  canvasDrawLine(cx - 7, cy - 9, cx, cy - 16, ink);
+  canvasDrawLine(cx + 7, cy - 9, cx, cy - 16, ink);
 }
 
 void drawIconWifi(int cx, int cy, bool ink) {
@@ -1112,7 +1134,9 @@ void uiRedrawExplorerViewport(const std::vector<DirEntry>& entries, const Explor
   drawExplorerDock(st);
 
   const int top = explorerListTop();
-  canvasPresentFor(CanvasRefreshIntent::InteractiveViewport, {0, top, kScreenW, kScreenH - top});
+  const CanvasRect list{0, top, kScreenW, std::max(1, kScreenH - top)};
+  canvasPresentWindowFast(list);
+  canvasArmLocalClean(list, 800);
 }
 
 UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool sheetOpen,
@@ -1221,7 +1245,8 @@ void drawShadeControls() {
   // Labels sit on the gray sheet — only interactive chrome gets a white fill.
   canvasDrawString(kPad + 8, g.titleY, "Quick settings", true, kTitle);
 
-  drawQsTile(g.tileX, g.tileY, g.icon, g.tileW, wifiIsActive(), drawIconWifi, "Wi-Fi");
+  drawQsTile(g.tileX, g.tileY, g.icon, g.tileW, wifiIsHotspot(), drawIconTransfer, "Transfer");
+  drawQsTile(g.netX, g.tileY, g.icon, g.tileW, wifiIsStation(), drawIconWifi, "Wi-Fi");
   drawQsTile(g.gpsX, g.tileY, g.icon, g.tileW, false, drawIconGps, "GPS");
   drawQsTile(g.settingsX, g.tileY, g.icon, g.tileW, false, drawIconGear, "Settings");
 
@@ -1297,6 +1322,10 @@ UiHit uiHitShade(int x, int y) {
     };
     if (x >= g.tileX && x < g.tileX + g.tileW) {
       markTile(g.tileX, UiHit::Kind::Wifi);
+      return hit;
+    }
+    if (x >= g.netX && x < g.netX + g.tileW) {
+      markTile(g.netX, UiHit::Kind::Net);
       return hit;
     }
     if (x >= g.gpsX && x < g.gpsX + g.tileW) {
@@ -1580,9 +1609,7 @@ void drawSkyCircle(int cx, int cy, int r) {
   }
 }
 
-void uiDrawGps() {
-  canvasClear();
-  drawStatusBar(appsFlashSpace(), true);
+int paintGpsHeader() {
   const GpsView view = gpsView();
   int y = statusBarH() + 8;
 
@@ -1630,23 +1657,16 @@ void uiDrawGps() {
   }
   const int skyBottom = skyCy + skyR + 8;
   if (y < skyBottom) y = skyBottom;
+  return y;
+}
 
-  const int backY = kScreenH - kPad - kActionBtnH;
-  const int mapH = backY - 8 - y;
-  gGpsMapX = 0;
-  gGpsMapY = y;
-  gGpsMapW = kScreenW;
-  gGpsMapH = mapH;
-  if (!gpsDrawMap(0, y, kScreenW, mapH)) {
-    canvasDrawString(kPad, y + 12, gpsHasMaps() ? "No map for this place" : "No maps on the SD card", true,
-                     kBody);
-  }
-
+void paintGpsMapChrome(int mapY, int mapH) {
+  const GpsView view = gpsView();
   constexpr int btn = 52;
-  gGpsZoomY = y + mapH - btn - 8;
+  gGpsZoomY = mapY + mapH - btn - 8;
   gGpsZoomPlusX = kScreenW - kPad - btn;
   gGpsZoomX = gGpsZoomPlusX - 8 - btn;
-  if (gGpsZoomY < y) gGpsZoomY = y;
+  if (gGpsZoomY < mapY) gGpsZoomY = mapY;
   gGpsMeX = -1;
   if (view.hasPos) {
     gGpsMeX = gGpsZoomX - 8 - btn;
@@ -1659,10 +1679,58 @@ void uiDrawGps() {
   snprintf(zoomLabel, sizeof(zoomLabel), "z%d", view.zoom);
   canvasDrawString(gGpsZoomPlusX + btn - canvasTextWidth(zoomLabel, kBody),
                    gGpsZoomY - canvasTextHeight(kBody) - 2, zoomLabel, true, kBody, true);
+}
 
+void paintGpsMap() {
+  if (!gpsDrawMap(gGpsMapX, gGpsMapY, gGpsMapW, gGpsMapH)) {
+    canvasDrawString(kPad, gGpsMapY + 12, gpsHasMaps() ? "No map for this place" : "No maps on the SD card",
+                     true, kBody);
+  }
+  paintGpsMapChrome(gGpsMapY, gGpsMapH);
+}
+
+void uiDrawGps() {
+  canvasClear();
+  drawStatusBar(appsFlashSpace(), true);
+  const int y = paintGpsHeader();
+  const int backY = kScreenH - kPad - kActionBtnH;
+  gGpsMapX = 0;
+  gGpsMapY = y;
+  gGpsMapW = kScreenW;
+  gGpsMapH = backY - 8 - y;
+  paintGpsMap();
   drawFilledBtn(kPad, backY, kScreenW - 2 * kPad, kActionBtnH, "Back");
+  canvasDisarmLocalClean();
   // A fast update turns a mostly white map grey and drops the thin lines.
   canvasPresent(EInkDisplay::HALF_REFRESH);
+}
+
+void uiRedrawGpsMap() {
+  if (gGpsMapH <= 0) {
+    uiDrawGps();
+    return;
+  }
+  paintGpsMap();
+  const CanvasRect map{gGpsMapX, gGpsMapY, gGpsMapW, gGpsMapH};
+  canvasPresentWindowFast(map);
+  canvasArmLocalClean(map, 700);
+}
+
+void uiRedrawGpsStatus() {
+  const int top = statusBarH();
+  if (gGpsMapY <= top) {
+    uiDrawGps();
+    return;
+  }
+  canvasFillRect(0, top, kScreenW, gGpsMapY - top, false);
+  const int y = paintGpsHeader();
+  if (y != gGpsMapY) {
+    uiDrawGps();
+    return;
+  }
+  const CanvasRect header{0, top, kScreenW, gGpsMapY - top};
+  canvasPresentWindowFast(header);
+  if (!canvasLocalCleanArmed()) canvasArmLocalClean(header, 1000);
 }
 
 UiHit uiHitGps(int x, int y) {
@@ -1710,7 +1778,7 @@ void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssi
   canvasClear();
   drawStatusBar(space, true);
   int y = statusBarH() + kPad;
-  canvasDrawString(kPad, y, "Wi-Fi transfer", true, kTitle);
+  canvasDrawString(kPad, y, "File transfer", true, kTitle);
   y += canvasTextHeight(kTitle) + 14;
 
   auto line = [&](const char* label, const char* value) {
@@ -1748,7 +1816,7 @@ void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssi
     canvasDrawQr(x0 + qrSize + gap, qrTop, qrSize, urlLine);
     y = qrTop + qrSize + 4;
     const int labelY = y;
-    canvasDrawString(x0, labelY, "Join Wi-Fi", true, kSmall);
+    canvasDrawString(x0, labelY, "Phone joins", true, kSmall);
     canvasDrawString(x0 + qrSize + gap, labelY, "Open page", true, kSmall);
     y = labelY + canvasTextHeight(kSmall) + 12;
   }
@@ -1764,9 +1832,9 @@ void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssi
 
   placeBtn("Change password", false);
   if (!active) {
-    placeBtn("Start hotspot", true);
+    placeBtn("Start transfer", true);
   } else {
-    placeBtn("Stop Wi-Fi", false);
+    placeBtn("Stop transfer", false);
   }
   drawFilledBtn(kPad, backY, btnW, kActionBtnH, "Back");
   presentNavigation();
@@ -1812,6 +1880,97 @@ UiHit uiHitWifi(int x, int y, bool active) {
     if (hitBtn(UiHit::Kind::WifiStartAp)) return hit;
   } else {
     if (hitBtn(UiHit::Kind::WifiStop)) return hit;
+  }
+  return hit;
+}
+
+int gNetScanY = -1;
+int gNetListY = 0;
+int gNetRowH = 46;
+int gNetShown = 0;
+int gNetDiscY = -1;
+int gNetBrowseY = -1;
+
+void uiDrawNet(const FlashSpace& space, const WifiStatus& status, const WifiAp* aps, int count) {
+  canvasClear();
+  drawStatusBar(space, true);
+  int y = statusBarH() + kPad;
+  canvasDrawString(kPad, y, "Wi-Fi", true, kTitle);
+  y += canvasTextHeight(kTitle) + 12;
+  const char* state = status.connected && status.mode == WifiMode::Station ? "Connected" : "Not connected";
+  canvasDrawString(kPad, y, state, true, kBody, true);
+  y += canvasTextHeight(kBody) + 4;
+  canvasDrawString(kPad, y, status.ssid[0] ? status.ssid : "No network", true, kBody);
+  y += canvasTextHeight(kBody) + 2;
+  char ipLine[48];
+  if (status.connected && status.ip[0]) snprintf(ipLine, sizeof(ipLine), "%s", status.ip);
+  else snprintf(ipLine, sizeof(ipLine), " ");
+  canvasDrawString(kPad, y, ipLine, true, kSmall);
+  y += canvasTextHeight(kSmall) + 12;
+
+  const int btnW = kScreenW - 2 * kPad;
+  const int backY = kScreenH - kPad - kActionBtnH;
+  gNetBrowseY = backY - 10 - kActionBtnH;
+  gNetDiscY = (status.connected && status.mode == WifiMode::Station) ? gNetBrowseY - 10 - kActionBtnH : -1;
+  gNetScanY = y;
+  y += kActionBtnH + 12;
+  gNetListY = y;
+  const int listBottom = (gNetDiscY >= 0 ? gNetDiscY : gNetBrowseY) - 8;
+  gNetShown = 0;
+  if (aps && count > 0 && listBottom > gNetListY) {
+    gNetShown = (listBottom - gNetListY) / gNetRowH;
+    if (gNetShown > count) gNetShown = count;
+  }
+
+  drawOutlineBtn(kPad, gNetScanY, btnW, kActionBtnH, "Scan");
+  for (int i = 0; i < gNetShown; ++i) {
+    const int rowY = gNetListY + i * gNetRowH;
+    canvasDrawRoundRect(kPad, rowY, btnW, gNetRowH - 6, 12, true);
+    char rssi[16];
+    snprintf(rssi, sizeof(rssi), "%d", aps[i].rssi);
+    const int rssiW = canvasTextWidth(rssi, kSmall);
+    canvasDrawString(kPad + btnW - 12 - rssiW, rowY + 8, rssi, true, kSmall);
+    char name[40];
+    snprintf(name, sizeof(name), "%s%s", aps[i].ssid, aps[i].open ? "" : " *");
+    const int maxW = btnW - 24 - rssiW - 8;
+    while (name[0] && canvasTextWidth(name, kBody) > maxW) name[strlen(name) - 1] = 0;
+    canvasDrawString(kPad + 12, rowY + 8, name, true, kBody);
+  }
+  if (gNetShown == 0) {
+    canvasDrawString(kPad, gNetListY, count == 0 ? "No networks yet" : "No room for the list", true, kBody);
+  }
+  if (gNetDiscY >= 0) drawOutlineBtn(kPad, gNetDiscY, btnW, kActionBtnH, "Disconnect");
+  drawFilledBtn(kPad, gNetBrowseY, btnW, kActionBtnH, "Browse");
+  drawFilledBtn(kPad, backY, btnW, kActionBtnH, "Back");
+  presentNavigation();
+}
+
+UiHit uiHitNet(int x, int y) {
+  UiHit hit;
+  if (y < statusBarH()) {
+    hit.kind = UiHit::Kind::OpenShade;
+    return hit;
+  }
+  const int btnW = kScreenW - 2 * kPad;
+  const int backY = kScreenH - kPad - kActionBtnH;
+  auto hitBtn = [&](int by, UiHit::Kind kind) {
+    if (by < 0 || y < by || y >= by + kActionBtnH || x < kPad || x >= kPad + btnW) return false;
+    hit.kind = kind;
+    markHit(hit, kPad, by, btnW, kActionBtnH);
+    return true;
+  };
+  if (hitBtn(backY, UiHit::Kind::Back)) return hit;
+  if (hitBtn(gNetBrowseY, UiHit::Kind::WebOpen)) return hit;
+  if (hitBtn(gNetDiscY, UiHit::Kind::NetDisconnect)) return hit;
+  if (hitBtn(gNetScanY, UiHit::Kind::NetScan)) return hit;
+  if (gNetShown > 0 && y >= gNetListY && x >= kPad && x < kPad + btnW) {
+    const int row = (y - gNetListY) / gNetRowH;
+    if (row >= 0 && row < gNetShown && y < gNetListY + row * gNetRowH + gNetRowH - 6) {
+      hit.kind = UiHit::Kind::NetJoin;
+      hit.index = row;
+      markHit(hit, kPad, gNetListY + row * gNetRowH, btnW, gNetRowH - 6, 12);
+      return hit;
+    }
   }
   return hit;
 }
@@ -2162,6 +2321,12 @@ bool hitInBand(int x, int y, int kx, int ky, int kw, int kh, int leftSlop, int r
   return y >= ky && y < ky + kh && x >= kx - leftSlop && x < kx + kw + rightSlop;
 }
 
+void setKey(UiHit& hit, UiHit::Kind kind, int value, int x, int y, int w, int h) {
+  hit.kind = kind;
+  hit.value = value;
+  markHit(hit, x, y, w, h, kOskRadius);
+}
+
 bool hitOskLetters(int x, int y, bool shift, UiHit& hit) {
   const int unit = oskUnitW();
   const int usable = oskUsable();
@@ -2181,8 +2346,7 @@ bool hitOskLetters(int x, int y, bool shift, UiHit& hit) {
         const int ls = (i == 0) ? 0 : halfGap;
         const int rs = (i == n - 1) ? 0 : halfGap;
         if (hitInBand(x, y, kx, ry, unit, kOskKeyH, ls, rs)) {
-          hit.kind = UiHit::Kind::KeyChar;
-          hit.value = static_cast<unsigned char>(keys[i]);
+          setKey(hit, UiHit::Kind::KeyChar, static_cast<unsigned char>(keys[i]), kx, ry, unit, kOskKeyH);
           return true;
         }
       }
@@ -2202,8 +2366,7 @@ bool hitOskLetters(int x, int y, bool shift, UiHit& hit) {
         const int ls = (i == 0) ? halfGap : halfGap;
         const int rs = (i == n - 1) ? halfGap : halfGap;
         if (hitInBand(x, y, kx, ry, unit, kOskKeyH, ls, rs)) {
-          hit.kind = UiHit::Kind::KeyChar;
-          hit.value = static_cast<unsigned char>(keys[i]);
+          setKey(hit, UiHit::Kind::KeyChar, static_cast<unsigned char>(keys[i]), kx, ry, unit, kOskKeyH);
           return true;
         }
       }
@@ -2221,20 +2384,19 @@ bool hitOskLetters(int x, int y, bool shift, UiHit& hit) {
     const int ry = oskRowY(2);
     if (y >= ry && y < ry + kOskKeyH) {
       if (hitInBand(x, y, startX, ry, wide, kOskKeyH, 0, halfGap)) {
-        hit.kind = UiHit::Kind::KeyShift;
+        setKey(hit, UiHit::Kind::KeyShift, 0, startX, ry, wide, kOskKeyH);
         return true;
       }
       const int midX = startX + wide + kOskGap;
       for (int i = 0; i < n; ++i) {
         const int kx = midX + i * (unit + kOskGap);
         if (hitInBand(x, y, kx, ry, unit, kOskKeyH, halfGap, halfGap)) {
-          hit.kind = UiHit::Kind::KeyChar;
-          hit.value = static_cast<unsigned char>(keys[i]);
+          setKey(hit, UiHit::Kind::KeyChar, static_cast<unsigned char>(keys[i]), kx, ry, unit, kOskKeyH);
           return true;
         }
       }
       if (hitInBand(x, y, midX + midW + kOskGap, ry, wide, kOskKeyH, halfGap, 0)) {
-        hit.kind = UiHit::Kind::KeyBackspace;
+        setKey(hit, UiHit::Kind::KeyBackspace, 0, midX + midW + kOskGap, ry, wide, kOskKeyH);
         return true;
       }
     }
@@ -2248,13 +2410,12 @@ bool hitOskLetters(int x, int y, bool shift, UiHit& hit) {
     if (y >= ry && y < ry + kOskKeyH) {
       const int startX = side;
       if (hitInBand(x, y, startX, ry, wide, kOskKeyH, 0, halfGap)) {
-        hit.kind = UiHit::Kind::KeySymbols;
+        setKey(hit, UiHit::Kind::KeySymbols, 0, startX, ry, wide, kOskKeyH);
         return true;
       }
       const int commaX = startX + wide + kOskGap;
       if (hitInBand(x, y, commaX, ry, punct, kOskKeyH, halfGap, halfGap)) {
-        hit.kind = UiHit::Kind::KeyChar;
-        hit.value = ',';
+        setKey(hit, UiHit::Kind::KeyChar, ',', commaX, ry, punct, kOskKeyH);
         return true;
       }
       const int spaceX = commaX + punct + kOskGap;
@@ -2263,12 +2424,11 @@ bool hitOskLetters(int x, int y, bool shift, UiHit& hit) {
       const int periodX = endX - periodW;
       const int spaceW = periodX - kOskGap - spaceX;
       if (hitInBand(x, y, spaceX, ry, spaceW, kOskKeyH, halfGap, halfGap)) {
-        hit.kind = UiHit::Kind::KeySpace;
+        setKey(hit, UiHit::Kind::KeySpace, 0, spaceX, ry, spaceW, kOskKeyH);
         return true;
       }
       if (hitInBand(x, y, periodX, ry, periodW, kOskKeyH, halfGap, 0)) {
-        hit.kind = UiHit::Kind::KeyChar;
-        hit.value = '.';
+        setKey(hit, UiHit::Kind::KeyChar, '.', periodX, ry, periodW, kOskKeyH);
         return true;
       }
     }
@@ -2292,8 +2452,7 @@ bool hitOskSymbols(int x, int y, UiHit& hit) {
     for (int i = 0; i < n; ++i) {
       const int kx = startX + i * (unit + kOskGap);
       if (hitInBand(x, y, kx, ry, unit, kOskKeyH, halfGap, halfGap)) {
-        hit.kind = UiHit::Kind::KeyChar;
-        hit.value = static_cast<unsigned char>(keys[i]);
+        setKey(hit, UiHit::Kind::KeyChar, static_cast<unsigned char>(keys[i]), kx, ry, unit, kOskKeyH);
         return true;
       }
     }
@@ -2311,13 +2470,12 @@ bool hitOskSymbols(int x, int y, UiHit& hit) {
       for (int i = 0; i < n; ++i) {
         const int kx = startX + i * (unit + kOskGap);
         if (hitInBand(x, y, kx, ry, unit, kOskKeyH, halfGap, halfGap)) {
-          hit.kind = UiHit::Kind::KeyChar;
-          hit.value = static_cast<unsigned char>(keys[i]);
+          setKey(hit, UiHit::Kind::KeyChar, static_cast<unsigned char>(keys[i]), kx, ry, unit, kOskKeyH);
           return true;
         }
       }
       if (hitInBand(x, y, startX + midW + kOskGap, ry, wide, kOskKeyH, halfGap, 0)) {
-        hit.kind = UiHit::Kind::KeyBackspace;
+        setKey(hit, UiHit::Kind::KeyBackspace, 0, startX + midW + kOskGap, ry, wide, kOskKeyH);
         return true;
       }
     }
@@ -2329,13 +2487,13 @@ bool hitOskSymbols(int x, int y, UiHit& hit) {
     if (y >= ry && y < ry + kOskKeyH) {
       const int startX = side;
       if (hitInBand(x, y, startX, ry, wide, kOskKeyH, 0, halfGap)) {
-        hit.kind = UiHit::Kind::KeySymbols;
+        setKey(hit, UiHit::Kind::KeySymbols, 0, startX, ry, wide, kOskKeyH);
         return true;
       }
       const int spaceX = startX + wide + kOskGap;
       const int spaceW = side + usable - spaceX;
       if (hitInBand(x, y, spaceX, ry, spaceW, kOskKeyH, halfGap, 0)) {
-        hit.kind = UiHit::Kind::KeySpace;
+        setKey(hit, UiHit::Kind::KeySpace, 0, spaceX, ry, spaceW, kOskKeyH);
         return true;
       }
     }
@@ -2352,9 +2510,27 @@ bool hitOsk(int x, int y, bool symbols, bool shift, UiHit& hit) {
 
 namespace {
 
+CanvasRect textFieldWindow(TextEditMode mode) {
+  const bool nameMode = mode == TextEditMode::Rename || mode == TextEditMode::NewFolder ||
+                        mode == TextEditMode::NewFile || mode == TextEditMode::ApPassword ||
+                        mode == TextEditMode::StaPassword || mode == TextEditMode::WebUrl ||
+                        mode == TextEditMode::WebField;
+  const int actionY = oskActionBarY();
+  const int fieldTop = statusBarH() + kPad + 40;
+  if (nameMode) {
+    const int boxY = fieldTop + 22;
+    return {kPad, boxY, kScreenW - 2 * kPad, 56};
+  }
+  const int boxTop = fieldTop + 18;
+  const int fieldBottom = actionY - 10;
+  return {kPad, boxTop, kScreenW - 2 * kPad, std::max(1, fieldBottom - boxTop)};
+}
+
 void drawTextEditField(const char* text, TextEditMode mode) {
   const bool nameMode = mode == TextEditMode::Rename || mode == TextEditMode::NewFolder ||
-                        mode == TextEditMode::NewFile || mode == TextEditMode::ApPassword;
+                        mode == TextEditMode::NewFile || mode == TextEditMode::ApPassword ||
+                        mode == TextEditMode::StaPassword || mode == TextEditMode::WebUrl ||
+                        mode == TextEditMode::WebField;
 
   const int actionY = oskActionBarY();
   const int fieldTop = statusBarH() + kPad + 40;
@@ -2367,6 +2543,9 @@ void drawTextEditField(const char* text, TextEditMode mode) {
     if (mode == TextEditMode::NewFolder) hint = "Folder name";
     else if (mode == TextEditMode::NewFile) hint = "File name";
     else if (mode == TextEditMode::ApPassword) hint = "8 to 63 characters";
+    else if (mode == TextEditMode::StaPassword) hint = "Network password";
+    else if (mode == TextEditMode::WebUrl) hint = "example.com or https://...";
+    else if (mode == TextEditMode::WebField) hint = "Search text";
     // Clear hint + name box (leave keyboard alone).
     const int boxY = fieldTop + 22;
     const int boxH = 56;
@@ -2389,6 +2568,12 @@ void drawTextEditField(const char* text, TextEditMode mode) {
       canvasDrawString(kPad, boxY + boxH + 12, "Then tap Done to create and edit.", true, kSmall);
     } else if (mode == TextEditMode::NewFolder) {
       canvasDrawString(kPad, boxY + boxH + 12, "Then tap Done to create the folder.", true, kSmall);
+    } else if (mode == TextEditMode::StaPassword) {
+      canvasDrawString(kPad, boxY + boxH + 12, "Then tap Done to join.", true, kSmall);
+    } else if (mode == TextEditMode::WebUrl) {
+      canvasDrawString(kPad, boxY + boxH + 12, "Then tap Done to open.", true, kSmall);
+    } else if (mode == TextEditMode::WebField) {
+      canvasDrawString(kPad, boxY + boxH + 12, "Then tap Done. Tap the search button.", true, kSmall);
     } else if (mode == TextEditMode::ApPassword) {
       canvasDrawString(kPad, boxY + boxH + 12, "Then tap Done. The hotspot restarts.", true, kSmall);
     }
@@ -2494,10 +2679,9 @@ void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shif
 
 void uiRedrawTextEditField(const char* text, TextEditMode mode) {
   drawTextEditField(text, mode);
-  const int actionY = oskActionBarY();
-  const int fieldTop = statusBarH() + kPad + 38;
-  canvasPresentFor(CanvasRefreshIntent::InteractiveLocal,
-                   {kPad, fieldTop, kScreenW - 2 * kPad, actionY - fieldTop});
+  const CanvasRect box = textFieldWindow(mode);
+  canvasPresentWindowFast(box);
+  canvasArmLocalClean(box, 1000);
 }
 
 UiHit uiHitTextEdit(int x, int y, bool symbols, bool shift) {
@@ -2532,10 +2716,17 @@ UiHit uiHitHome(int x, int y) {
   }
 
   int fx, fy, fw, fh;
-  filesChipRect(fx, fy, fw, fh);
+  homeChipRect(0, fx, fy, fw, fh);
   if (y >= fy && y < fy + fh && x >= fx && x < fx + fw) {
     hit.kind = UiHit::Kind::OpenFiles;
-    markHit(hit, fx, fy + 8, std::min(fw, 160), fh - 16);
+    markHit(hit, fx, fy + 8, fw, fh - 16);
+    return hit;
+  }
+  int wx, wy, ww, wh;
+  homeChipRect(1, wx, wy, ww, wh);
+  if (y >= wy && y < wy + wh && x >= wx && x < wx + ww) {
+    hit.kind = UiHit::Kind::WebOpen;
+    markHit(hit, wx, wy + 8, ww, wh - 16);
     return hit;
   }
 

@@ -37,6 +37,18 @@ void canvasPresentAuto();
 // schedule one clean resting frame after the burst. Rectangles are logical
 // portrait coordinates and are converted to the panel's native orientation.
 void canvasPresentFor(CanvasRefreshIntent intent, CanvasRect dirty = {});
+// Paint is already in the 1-bit framebuffer. Queue a fast window and return
+// without waiting for the waveform. A later call replaces one still waiting.
+void canvasPresentWindowFast(CanvasRect dirty);
+// The framebuffer already shows this key inverted. Copy it now if the panel is
+// idle, then the caller restores the buffer. The matching normal frame is
+// pushed later and is not replaced by a text-field window.
+bool canvasFlashInvertedKey(CanvasRect dirty);
+void canvasArmKeyRestore(CanvasRect dirty);
+// After this rectangle stops changing, scrub just that rectangle.
+void canvasArmLocalClean(CanvasRect dirty, uint32_t delayMs);
+void canvasDisarmLocalClean();
+bool canvasLocalCleanArmed();
 void canvasServiceRefresh();
 void canvasCancelPendingClean();
 // While held, canvasPresentAuto never promotes to HALF — for text entry where
