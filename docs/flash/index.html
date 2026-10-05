@@ -148,10 +148,10 @@
     // Preload the single full image into a blob: URL so esp-web-tools does not
     // re-fetch over the network (Pages gzip / CDN traps).
     const PARTS = [
-      { file: "basilauncher-full.bin", offset: 0, expect: 1364336 },
+      { file: "basilauncher-full.bin", offset: 0, expect: 1499728 },
     ];
-    const VERSION = "1.4.44";
-    const CACHE_BUST = "20261003a";
+    const VERSION = "1.4.62";
+    const CACHE_BUST = "20261005a";
 
     const statusEl = document.getElementById("preload-status");
     const btn = document.getElementById("install-btn");
