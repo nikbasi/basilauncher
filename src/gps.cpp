@@ -38,6 +38,9 @@ struct TileSlot {
 };
 
 bool gRadioOn = false;
+// NMEA keeps arriving while a map tile is decoded. 38400 baud for about four
+// seconds fits; the hardware FIFO would not.
+constexpr size_t kGpsRxBytes = 16384;
 GpsView gView;
 GpsSat gSats[kMaxSats];
 int gSatCount = 0;
@@ -61,32 +64,20 @@ void holdChipSelects() {
   digitalWrite(T5S3_SD_CS, HIGH);
 }
 
-bool gRadioSuspended = false;
 int gSdDepth = 0;
 bool gSawMaps = false;
 
-// The SX1262 shares the SD bus and is powered by the GPS rail. Card reads
-// happen with that rail off, which is the state the bus was measured in.
+// The SX1262 shares the SD SPI bus and the GPS power rail. NSS held high
+// tri-states its MISO, so a tile read does not have to drop that rail. Cutting
+// it cold-starts the receiver and throws away the search already in progress.
 void sdBegin() {
   if (gSdDepth++ > 0) return;
-  if (!gRadioOn) {
-    holdChipSelects();
-    return;
-  }
-  Serial1.end();
-  BoardT5S3::disableGpsLora();
-  gRadioSuspended = true;
+  holdChipSelects();
 }
 
 void sdEnd() {
   if (gSdDepth == 0 || --gSdDepth > 0) return;
-  if (!gRadioSuspended) return;
-  gRadioSuspended = false;
   holdChipSelects();
-  BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, true);
-  BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, OUTPUT);
-  delay(30);
-  Serial1.begin(boardGpsBaud(), SERIAL_8N1, T5S3_GPS_RXD, T5S3_GPS_TXD);
 }
 
 double nmeaDeg(const char* dm) {
@@ -514,6 +505,7 @@ void gpsStart(bool fresh) {
   BoardT5S3::writePca9535Pin(PCA9535_IO00_LORA_GPS_EN, true);
   BoardT5S3::setPca9535PinMode(PCA9535_IO00_LORA_GPS_EN, OUTPUT);
   delay(80);
+  Serial1.setRxBufferSize(kGpsRxBytes);
   Serial1.begin(boardGpsBaud(), SERIAL_8N1, T5S3_GPS_RXD, T5S3_GPS_TXD);
   gLineLen = 0;
   gRadioOn = true;
