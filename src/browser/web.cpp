@@ -535,9 +535,8 @@ void webDraw(WebPaint paint) {
   const CanvasRect content{0, gContentTop, kScreenW, contentH};
   if (paint == WebPaint::Follow) {
     canvasPresentWindowFast(content);
-    canvasArmLocalClean(content, 700);
+    canvasArmFullClean(600);
   } else {
-    canvasDisarmLocalClean();
     canvasPresentFor(CanvasRefreshIntent::Navigation);
   }
 }

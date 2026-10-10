@@ -42,7 +42,7 @@ inline void setPlanePixel(uint8_t* plane, uint16_t wb, int px, int py, bool set)
 EInkDisplay display(-1, -1, -1, -1, -1, -1);
 
 namespace {
-int gCleanEvery = 8;
+int gCleanEvery = 3;
 bool gHoldCleanRefresh = false;
 int gUiTextSize = 1;  // 0=Small 10×20, 1=Medium 12×24, 2=Large 14×28
 uint8_t* gGrayLsb = nullptr;
@@ -55,17 +55,56 @@ uint32_t gCleanDueMs = 0;
 
 constexpr uint32_t kFullArea = static_cast<uint32_t>(kScreenW) * kScreenH;
 
+enum class GlassState : uint8_t {
+  FullClean,
+  FullFast,
+  WindowDirty,
+};
+
+GlassState gGlassState = GlassState::WindowDirty;
+
 struct WindowJob {
   bool pending = false;
-  bool clean = false;
   CanvasRect rect{};
 };
 
 WindowJob gFastJob;
 WindowJob gKeyRestore;
-bool gLocalCleanArmed = false;
-CanvasRect gLocalCleanRect{};
-uint32_t gLocalCleanDue = 0;
+
+const char* glassStateName() {
+  switch (gGlassState) {
+    case GlassState::FullClean: return "clean";
+    case GlassState::FullFast: return "fast";
+    case GlassState::WindowDirty: return "window";
+  }
+  return "unknown";
+}
+
+void addGhostDebt(uint32_t area) {
+  gGhostDebt = std::min<uint32_t>(UINT32_MAX - area, gGhostDebt) + area;
+}
+
+bool fastBudgetSpent(uint32_t nextArea = 0) {
+  const uint64_t debt = static_cast<uint64_t>(gGhostDebt) + nextArea;
+  return debt >= static_cast<uint64_t>(kFullArea) * static_cast<uint32_t>(gCleanEvery);
+}
+
+void recordFullClean() {
+  gGlassState = GlassState::FullClean;
+  gGhostDebt = 0;
+  gCleanPending = false;
+  gForceClean = false;
+}
+
+void recordFullFast(uint32_t changedArea) {
+  gGlassState = GlassState::FullFast;
+  addGhostDebt(changedArea);
+}
+
+void armFullClean(uint32_t delayMs) {
+  gCleanPending = true;
+  gCleanDueMs = millis() + delayMs;
+}
 
 const char* intentName(CanvasRefreshIntent intent) {
   switch (intent) {
@@ -108,9 +147,13 @@ bool flushWindowJob() {
     gFastJob.pending = false;
     return true;
   }
-  const auto mode = gFastJob.clean ? EInkDisplay::HALF_REFRESH : EInkDisplay::FAST_REFRESH;
-  if (!display.displayWindowDeferred(native.x, native.y, native.w, native.h, mode)) return false;
+  if (!display.displayWindowDeferred(native.x, native.y, native.w, native.h, EInkDisplay::FAST_REFRESH)) {
+    return false;
+  }
+  addGhostDebt(static_cast<uint32_t>(gFastJob.rect.w) * gFastJob.rect.h);
   gFastJob.pending = false;
+  gGlassState = GlassState::WindowDirty;
+  armFullClean(800);
   return true;
 }
 
@@ -123,7 +166,6 @@ void clearGrayPlanes() {
 
 void presentCleanFrame(const char* reason) {
   gFastJob.pending = false;
-  gFastJob.clean = false;
   gKeyRestore.pending = false;
   esp_task_wdt_reset();
   const uint32_t started = millis();
@@ -134,11 +176,10 @@ void presentCleanFrame(const char* reason) {
   } else {
     display.displayBuffer(EInkDisplay::HALF_REFRESH, false);
   }
-  Serial.printf("[epd] intent=%s mode=clean gray=%d refresh=%lu ms debt=%lu\n", reason, gray ? 1 : 0,
-                static_cast<unsigned long>(millis() - started), static_cast<unsigned long>(gGhostDebt));
-  gGhostDebt = 0;
-  gCleanPending = false;
-  gForceClean = false;
+  Serial.printf("[epd] intent=%s mode=clean gray=%d refresh=%lu ms debt=%lu state=%s\n", reason, gray ? 1 : 0,
+                static_cast<unsigned long>(millis() - started), static_cast<unsigned long>(gGhostDebt),
+                glassStateName());
+  recordFullClean();
 }
 }  // namespace
 
@@ -163,8 +204,13 @@ void canvasClear() {
 
 void canvasRequestCleanRefresh() {
   gForceClean = true;
-  gCleanPending = true;
-  gCleanDueMs = millis();
+  armFullClean(0);
+}
+
+bool canvasRequestIdleClean() {
+  if (gCleanPending || (gGhostDebt == 0 && gGlassState == GlassState::FullClean)) return false;
+  canvasRequestCleanRefresh();
+  return true;
 }
 
 void canvasSetCleanEvery(int n) {
@@ -229,7 +275,6 @@ int canvasTitleCellH() {
 
 void canvasPresent(EInkDisplay::RefreshMode mode) {
   gFastJob.pending = false;
-  gFastJob.clean = false;
   gKeyRestore.pending = false;
   esp_task_wdt_reset();
   const uint32_t started = millis();
@@ -244,23 +289,33 @@ void canvasPresent(EInkDisplay::RefreshMode mode) {
   Serial.printf("[epd] intent=direct mode=%s gray=%d refresh=%lu ms\n", clean ? "clean" : "fast",
                 gray ? 1 : 0, static_cast<unsigned long>(millis() - started));
   if (clean) {
-    gGhostDebt = 0;
-    gCleanPending = false;
-    gForceClean = false;
+    recordFullClean();
+  } else {
+    recordFullFast(kFullArea);
   }
 }
 
-void canvasPresentAuto() {
-  if (gForceClean && !gHoldCleanRefresh) {
-    presentCleanFrame("requested");
-    return;
+bool canvasPresentFullFastDelta(uint32_t changedArea, uint32_t settleMs) {
+  if (gForceClean || gGlassState == GlassState::WindowDirty) {
+    armFullClean(settleMs);
+    Serial.printf("[epd] intent=delta mode=defer area=%lu debt=%lu state=%s due=%lu\n",
+                  static_cast<unsigned long>(changedArea), static_cast<unsigned long>(gGhostDebt),
+                  glassStateName(), static_cast<unsigned long>(settleMs));
+    return false;
   }
-  canvasPresentFor(CanvasRefreshIntent::Navigation);
+
+  display.displayBuffer(EInkDisplay::FAST_REFRESH, false);
+  recordFullFast(std::min<uint32_t>(changedArea, kFullArea));
+  if (fastBudgetSpent()) armFullClean(settleMs);
+  Serial.printf("[epd] intent=delta mode=fast area=%lu debt=%lu state=%s clean=%d due=%lu\n",
+                static_cast<unsigned long>(changedArea), static_cast<unsigned long>(gGhostDebt),
+                glassStateName(), gCleanPending ? 1 : 0,
+                static_cast<unsigned long>(gCleanPending ? settleMs : 0));
+  return true;
 }
 
 void canvasPresentFor(CanvasRefreshIntent intent, CanvasRect dirty) {
   gFastJob.pending = false;
-  gFastJob.clean = false;
   gKeyRestore.pending = false;
   dirty = clippedRect(dirty);
   if (dirty.w <= 0 || dirty.h <= 0) return;
@@ -272,16 +327,25 @@ void canvasPresentFor(CanvasRefreshIntent intent, CanvasRect dirty) {
 
   const CanvasRect native = toPhysicalRect(dirty);
   const bool full = dirty.x == 0 && dirty.y == 0 && dirty.w == kScreenW && dirty.h == kScreenH;
+  const uint32_t area = static_cast<uint32_t>(dirty.w) * dirty.h;
+  const bool navigation = full && intent == CanvasRefreshIntent::Navigation;
+  const bool cleanNavigation = navigation &&
+                               (gForceClean || gCleanPending || gGlassState == GlassState::WindowDirty ||
+                                gGrayUsed || fastBudgetSpent(area));
   esp_task_wdt_reset();
   const uint32_t started = millis();
-  if (full) {
+  if (cleanNavigation) {
+    presentCleanFrame(intentName(intent));
+    return;
+  } else if (full) {
     display.displayBuffer(EInkDisplay::FAST_REFRESH, false);
+    recordFullFast(area);
   } else {
     display.displayWindow(native.x, native.y, native.w, native.h, false);
+    addGhostDebt(area);
+    gGlassState = GlassState::WindowDirty;
   }
   const uint32_t elapsed = millis() - started;
-  const uint32_t area = static_cast<uint32_t>(dirty.w) * dirty.h;
-  gGhostDebt = std::min<uint32_t>(UINT32_MAX - area, gGhostDebt) + area;
 
   uint32_t settleMs = 700;
   switch (intent) {
@@ -291,29 +355,14 @@ void canvasPresentFor(CanvasRefreshIntent intent, CanvasRect dirty) {
     case CanvasRefreshIntent::Progress: settleMs = 2000; break;
     default: break;
   }
-  if (gForceClean || gGhostDebt >= kFullArea * static_cast<uint32_t>(gCleanEvery)) {
-    settleMs = std::min<uint32_t>(settleMs, 200);
-  }
-  // Clean only when explicitly requested, once the area-weighted fast budget
-  // is spent, or when a stable screen has real-gray refinement waiting. This
-  // keeps "Clean every N" meaningful and avoids paying a 2.6 s clean waveform
-  // after every tiny update.
-  const bool budgetSpent = gGhostDebt >= kFullArea * static_cast<uint32_t>(gCleanEvery);
-  const bool grayRefinement = gGrayUsed && intent == CanvasRefreshIntent::Navigation;
-  const bool pendingRefinement = gCleanPending && gGrayUsed;
-  const bool scheduleClean = gForceClean || budgetSpent || grayRefinement || pendingRefinement;
-  gCleanPending = scheduleClean;
-  if (scheduleClean) {
-    if ((grayRefinement || pendingRefinement) && !gForceClean && !budgetSpent) {
-      settleMs = std::max<uint32_t>(settleMs, 1800);
-    }
-    gCleanDueMs = millis() + settleMs;
-  }
+  const bool scheduleClean = !navigation && (!full || gForceClean || fastBudgetSpent());
+  if (scheduleClean) armFullClean(gForceClean ? 200 : settleMs);
   Serial.printf(
-      "[epd] intent=%s mode=fast logical=%d,%d %dx%d native=%d,%d %dx%d refresh=%lu ms debt=%lu clean=%d due=%lu\n",
+      "[epd] intent=%s mode=fast logical=%d,%d %dx%d native=%d,%d %dx%d refresh=%lu ms debt=%lu state=%s "
+      "clean=%d due=%lu\n",
       intentName(intent), dirty.x, dirty.y, dirty.w, dirty.h, native.x, native.y, native.w, native.h,
-      static_cast<unsigned long>(elapsed), static_cast<unsigned long>(gGhostDebt), scheduleClean ? 1 : 0,
-      static_cast<unsigned long>(scheduleClean ? settleMs : 0));
+      static_cast<unsigned long>(elapsed), static_cast<unsigned long>(gGhostDebt), glassStateName(),
+      scheduleClean ? 1 : 0, static_cast<unsigned long>(scheduleClean ? (gForceClean ? 200 : settleMs) : 0));
 }
 
 void canvasPresentWindowFast(CanvasRect dirty) {
@@ -323,8 +372,8 @@ void canvasPresentWindowFast(CanvasRect dirty) {
   // screen would flash over this interaction, so drop it.
   gCleanPending = false;
   gForceClean = false;
+  gGlassState = GlassState::WindowDirty;
   gFastJob.pending = true;
-  gFastJob.clean = false;
   gFastJob.rect = dirty;
   flushWindowJob();
 }
@@ -337,7 +386,6 @@ bool canvasFlashInvertedKey(CanvasRect dirty) {
                        gKeyRestore.rect.w == dirty.w && gKeyRestore.rect.h == dirty.h;
   if (gKeyRestore.pending && !sameKey) {
     gFastJob.pending = true;
-    gFastJob.clean = false;
     gFastJob.rect = gKeyRestore.rect;
     if (!flushWindowJob()) {
       gFastJob.pending = false;
@@ -347,7 +395,6 @@ bool canvasFlashInvertedKey(CanvasRect dirty) {
     if (display.windowRefreshBusy()) return false;
   }
   gFastJob.pending = true;
-  gFastJob.clean = false;
   gFastJob.rect = dirty;
   if (!flushWindowJob()) {
     gFastJob.pending = false;
@@ -360,43 +407,18 @@ void canvasArmKeyRestore(CanvasRect dirty) {
   dirty = clippedRect(dirty);
   if (dirty.w <= 0 || dirty.h <= 0) return;
   gKeyRestore.pending = true;
-  gKeyRestore.clean = false;
   gKeyRestore.rect = dirty;
 }
 
-void canvasArmLocalClean(CanvasRect dirty, uint32_t delayMs) {
-  dirty = clippedRect(dirty);
-  if (dirty.w <= 0 || dirty.h <= 0) return;
-  gLocalCleanArmed = true;
-  gLocalCleanRect = dirty;
-  gLocalCleanDue = millis() + delayMs;
-}
-
-void canvasDisarmLocalClean() { gLocalCleanArmed = false; }
-
-bool canvasLocalCleanArmed() { return gLocalCleanArmed; }
+void canvasArmFullClean(uint32_t delayMs) { armFullClean(delayMs); }
 
 void canvasServiceRefresh() {
   flushWindowJob();
   if (gKeyRestore.pending && !gFastJob.pending && !display.windowRefreshBusy()) {
     gFastJob.pending = true;
-    gFastJob.clean = false;
     gFastJob.rect = gKeyRestore.rect;
     if (flushWindowJob()) gKeyRestore.pending = false;
     else gFastJob.pending = false;
-  }
-  // The text-box scrub still runs while a full-screen scrub is held. It only
-  // covers the rectangle that was changing.
-  if (gLocalCleanArmed && !gFastJob.pending && static_cast<int32_t>(millis() - gLocalCleanDue) >= 0 &&
-      !display.windowRefreshBusy()) {
-    gFastJob.pending = true;
-    gFastJob.clean = true;
-    gFastJob.rect = gLocalCleanRect;
-    if (flushWindowJob()) gLocalCleanArmed = false;
-    else {
-      gFastJob.pending = false;
-      gFastJob.clean = false;
-    }
   }
   if (gFastJob.pending || display.windowRefreshBusy()) return;
   if (!gCleanPending || gHoldCleanRefresh) return;
@@ -449,6 +471,75 @@ void canvasFillRect(int x, int y, int w, int h, bool black) {
       setPhysPixel(fb, wb, px, py, black);
       setPlanePixel(gGrayLsb, wb, px, py, false);
       setPlanePixel(gGrayMsb, wb, px, py, false);
+    }
+  }
+}
+
+namespace {
+
+uint8_t takePackedBits(const uint8_t* src, int stride, int bit, int n) {
+  const int i = bit >> 3;
+  const int off = bit & 7;
+  const uint16_t hi = (src && i >= 0 && i < stride) ? src[i] : 0;
+  const uint16_t lo = (src && i + 1 >= 0 && i + 1 < stride) ? src[i + 1] : 0;
+  const uint16_t window = static_cast<uint16_t>((hi << 8) | lo);
+  const int shift = 16 - off - n;
+  if (shift < 0 || n <= 0 || n > 8) return 0;
+  return static_cast<uint8_t>((window >> shift) & ((1u << n) - 1));
+}
+
+// Source bit 1 is black. The panel buffer stores black as a clear bit.
+void depositInverted(uint8_t* row, uint8_t* grayL, uint8_t* grayM, int x, uint8_t chunk, int n) {
+  const int dOff = x & 7;
+  const int shift = 8 - dOff - n;
+  const uint8_t mask = static_cast<uint8_t>(((1u << n) - 1) << shift);
+  const uint8_t placed = static_cast<uint8_t>(chunk << shift);
+  const uint8_t inverted = static_cast<uint8_t>((~placed) & mask);
+  uint8_t& b = row[x >> 3];
+  b = static_cast<uint8_t>((b & static_cast<uint8_t>(~mask)) | inverted);
+  if (grayL) grayL[x >> 3] = static_cast<uint8_t>(grayL[x >> 3] & static_cast<uint8_t>(~mask));
+  if (grayM) grayM[x >> 3] = static_cast<uint8_t>(grayM[x >> 3] & static_cast<uint8_t>(~mask));
+}
+
+}  // namespace
+
+void canvasBlitColumnBits(int destX, int destY, int width, int height, const uint8_t* bits, int stride) {
+  if (!bits || width <= 0 || height <= 0 || stride <= 0) return;
+  uint8_t* fb = display.getFrameBuffer();
+  if (!fb) return;
+  const uint16_t wb = display.getDisplayWidthBytes();
+  const int xEnd = destX + width;
+  for (int lx = destX; lx < xEnd; ++lx) {
+    if (((lx - destX) & 31) == 0) esp_task_wdt_reset();
+    int px0 = 0, py = 0;
+    toPhysical(lx, destY, px0, py);
+    if (py < 0 || py >= kPhysH) continue;
+    uint8_t* row = fb + static_cast<uint32_t>(py) * wb;
+    uint8_t* grayL = gGrayLsb ? gGrayLsb + static_cast<uint32_t>(py) * wb : nullptr;
+    uint8_t* grayM = gGrayMsb ? gGrayMsb + static_cast<uint32_t>(py) * wb : nullptr;
+    const uint8_t* col = bits + static_cast<size_t>(lx - destX) * stride;
+    int srcBit = 0;
+    int x = px0;
+    int left = height;
+    while (left > 0 && x < kPhysW) {
+      if (x < 0) {
+        const int skip = -x;
+        srcBit += skip;
+        left -= skip;
+        x = 0;
+        continue;
+      }
+      const int sOff = srcBit & 7;
+      const int dOff = x & 7;
+      int n = 8 - sOff;
+      if (n > 8 - dOff) n = 8 - dOff;
+      if (n > left) n = left;
+      if (n <= 0) break;
+      if ((x >> 3) >= wb) break;
+      depositInverted(row, grayL, grayM, x, takePackedBits(col, stride, srcBit, n), n);
+      x += n;
+      srcBit += n;
+      left -= n;
     }
   }
 }

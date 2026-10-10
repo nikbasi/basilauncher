@@ -35,6 +35,9 @@ void gpsPause();
 // Radio off, then write /gps/track.gpx if this session has points.
 void gpsLeave();
 bool gpsActive();
+// True from gpsStart until gpsLeave. Opening the shade pauses the radio and
+// does not end the session.
+bool gpsSession();
 
 GpsPoll gpsPoll();
 const GpsView& gpsView();
@@ -44,8 +47,14 @@ GpsSat gpsSat(int index);
 // True when the level changed and a tile exists at the map center.
 bool gpsZoomIn();
 bool gpsZoomOut();
+// Zoom around a point measured from the map viewport center. Pinch scale <1
+// zooms out and >1 zooms in while keeping that map point under the fingers.
+bool gpsPinchZoom(float scale, int offsetX, int offsetY);
 // Finger movement in screen pixels. The map follows the finger.
 bool gpsPan(int dx, int dy);
+// Slide the map already drawn by this many screen pixels. Exposed edges come
+// from tiles kept in RAM. No card access. False when the pane is not ready.
+bool gpsScrollMap(int dx, int dy, int x, int y, int w, int h);
 // True when follow mode would slide the map onto a newer fix.
 bool gpsMapFollowMoved();
 // Put the map back on the fix. False when there is no position yet.

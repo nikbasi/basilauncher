@@ -543,7 +543,7 @@ void uiShadeBrightnessTrack(int& x, int& y, int& w, int& h) {
 int uiBrightnessFromTouchX(int touchX) {
   if (gBrightW <= 0) return boardBrightness();
   int pct = ((touchX - gBrightX) * 100) / gBrightW;
-  if (pct < 0) pct = 0;
+  if (pct < 1) pct = 1;
   if (pct > 100) pct = 100;
   return pct;
 }
@@ -616,10 +616,9 @@ void uiRedrawStatusBar(const FlashSpace& space, bool showClosedGrabber) {
   const int h = statusBarH();
   canvasFillRect(0, 0, kScreenW, h, false);
   drawStatusBar(space, showClosedGrabber);
-  // A windowed fast refresh drives every pixel in the strip, and the fast LUT
-  // parks that white as grey. A full-frame diff only drives the digits that
-  // actually changed, so the rest of the bar stays white.
-  canvasPresent(EInkDisplay::FAST_REFRESH);
+  // A coherent full-frame diff drives only changed chrome. If a window update
+  // came first, the canvas layer defers this until the full settle clean.
+  canvasPresentFullFastDelta(static_cast<uint32_t>(kScreenW) * h);
 }
 
 void uiRedrawHomeStatus(const FlashSpace& space) { uiRedrawStatusBar(space, true); }
@@ -1136,7 +1135,7 @@ void uiRedrawExplorerViewport(const std::vector<DirEntry>& entries, const Explor
   const int top = explorerListTop();
   const CanvasRect list{0, top, kScreenW, std::max(1, kScreenH - top)};
   canvasPresentWindowFast(list);
-  canvasArmLocalClean(list, 800);
+  canvasArmFullClean(600);
 }
 
 UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool sheetOpen,
@@ -1247,7 +1246,7 @@ void drawShadeControls() {
 
   drawQsTile(g.tileX, g.tileY, g.icon, g.tileW, wifiIsHotspot(), drawIconTransfer, "Transfer");
   drawQsTile(g.netX, g.tileY, g.icon, g.tileW, wifiIsStation(), drawIconWifi, "Wi-Fi");
-  drawQsTile(g.gpsX, g.tileY, g.icon, g.tileW, false, drawIconGps, "GPS");
+  drawQsTile(g.gpsX, g.tileY, g.icon, g.tileW, gpsSession(), drawIconGps, "GPS");
   drawQsTile(g.settingsX, g.tileY, g.icon, g.tileW, false, drawIconGear, "Settings");
 
   drawSectionRule(g.frontRuleY, g.panelX, g.panelW);
@@ -1299,9 +1298,8 @@ void uiRedrawShadeControls(const FlashSpace& space) {
   canvasFillRect(0, 0, kScreenW, g.panelY + g.panelH, false);
   drawStatusBar(space, false);
   drawShadeControls();
-  // Same as the status bar: a windowed fast refresh of this white sheet leaves
-  // it grey. A full-frame diff only drives the slider and the percent.
-  canvasPresent(EInkDisplay::FAST_REFRESH);
+  const uint32_t area = static_cast<uint32_t>(kScreenW) * (g.panelY + g.panelH);
+  canvasPresentFullFastDelta(area, 500);
 }
 
 UiHit uiHitShade(int x, int y) {
@@ -1420,8 +1418,8 @@ void uiDrawSettings(const FlashSpace& space) {
   drawSettingsStepper(g.sleepY, "Auto-sleep", sleepTxt, g.rowMinusX, g.rowPlusX);
 
   char every[12];
-  snprintf(every, sizeof(every), "%d", boardCleanEvery());
-  drawSettingsStepper(g.cleanY, "Fast budget", every, g.cleanMinusX, g.cleanPlusX);
+  snprintf(every, sizeof(every), "%d pages", boardCleanEvery());
+  drawSettingsStepper(g.cleanY, "Clean every", every, g.cleanMinusX, g.cleanPlusX);
 
   const BoardClockInfo clock = boardClock();
   canvasDrawString(kPad, g.timeLabelY, "Time", true, kBody);
@@ -1700,8 +1698,32 @@ void uiDrawGps() {
   gGpsMapH = backY - 8 - y;
   paintGpsMap();
   drawFilledBtn(kPad, backY, kScreenW - 2 * kPad, kActionBtnH, "Back");
-  canvasDisarmLocalClean();
   // A fast update turns a mostly white map grey and drops the thin lines.
+  canvasPresent(EInkDisplay::HALF_REFRESH);
+}
+
+void uiFollowGpsMap(int dx, int dy) {
+  canvasSetHoldCleanRefresh(true);
+  canvasCancelPendingClean();
+  if (gGpsMapH <= 0 || !gpsScrollMap(dx, dy, gGpsMapX, gGpsMapY, gGpsMapW, gGpsMapH)) {
+    paintGpsMap();
+  } else {
+    paintGpsMapChrome(gGpsMapY, gGpsMapH);
+  }
+  // Only the map. A fast window of the whole glass parks the white apps page grey.
+  const CanvasRect map{gGpsMapX, gGpsMapY, gGpsMapW, gGpsMapH};
+  canvasPresentWindowFast(map);
+}
+
+void uiSettleGpsMap() {
+  canvasSetHoldCleanRefresh(false);
+  canvasCancelPendingClean();
+  if (gGpsMapH <= 0) {
+    uiDrawGps();
+    return;
+  }
+  paintGpsMap();
+  canvasDiscardGray();
   canvasPresent(EInkDisplay::HALF_REFRESH);
 }
 
@@ -1711,12 +1733,12 @@ void uiRedrawGpsMap() {
     return;
   }
   paintGpsMap();
-  const CanvasRect map{gGpsMapX, gGpsMapY, gGpsMapW, gGpsMapH};
-  canvasPresentWindowFast(map);
-  canvasArmLocalClean(map, 700);
+  canvasDiscardGray();
+  canvasCancelPendingClean();
+  canvasPresent(EInkDisplay::HALF_REFRESH);
 }
 
-void uiRedrawGpsStatus() {
+void uiRedrawGpsStatus(bool present) {
   const int top = statusBarH();
   if (gGpsMapY <= top) {
     uiDrawGps();
@@ -1728,9 +1750,10 @@ void uiRedrawGpsStatus() {
     uiDrawGps();
     return;
   }
-  const CanvasRect header{0, top, kScreenW, gGpsMapY - top};
-  canvasPresentWindowFast(header);
-  if (!canvasLocalCleanArmed()) canvasArmLocalClean(header, 1000);
+  canvasDiscardGray();
+  if (!present) return;
+  const uint32_t area = static_cast<uint32_t>(kScreenW) * (gGpsMapY - top);
+  canvasPresentFullFastDelta(area, 500);
 }
 
 UiHit uiHitGps(int x, int y) {
@@ -1770,6 +1793,13 @@ bool uiGpsMapContains(int x, int y) {
   constexpr int btn = 52;
   if (y >= gGpsZoomY && y < gGpsZoomY + btn && x >= gGpsZoomX - 8) return false;
   if (gGpsMeX >= 0 && y >= gGpsZoomY && y < gGpsZoomY + btn && x >= gGpsMeX && x < gGpsMeX + btn) return false;
+  return true;
+}
+
+bool uiGpsMapOffsetFromCenter(int x, int y, int& offsetX, int& offsetY) {
+  if (!uiGpsMapContains(x, y)) return false;
+  offsetX = x - (gGpsMapX + gGpsMapW / 2);
+  offsetY = y - (gGpsMapY + gGpsMapH / 2);
   return true;
 }
 
@@ -2681,7 +2711,7 @@ void uiRedrawTextEditField(const char* text, TextEditMode mode) {
   drawTextEditField(text, mode);
   const CanvasRect box = textFieldWindow(mode);
   canvasPresentWindowFast(box);
-  canvasArmLocalClean(box, 1000);
+  canvasArmFullClean(1000);
 }
 
 UiHit uiHitTextEdit(int x, int y, bool symbols, bool shift) {

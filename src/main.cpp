@@ -152,8 +152,7 @@ void maybeIdleScrubHome() {
   if (now - gLastActiveMs < kIdleMs) return;
   if (now - gLastHomeScrubMs < kIdleMs) return;
   gLastHomeScrubMs = now;
-  canvasRequestCleanRefresh();
-  canvasServiceRefresh();
+  if (canvasRequestIdleClean()) canvasServiceRefresh();
 }
 
 void showMessage(const char* title, const char* body, bool returnExplorer) {
@@ -348,7 +347,6 @@ void openImage(const char* path) {
 }
 
 void redrawTextEdit(bool scrub = false) {
-  canvasDisarmLocalClean();
   canvasSetHoldCleanRefresh(true);
   gScreen = Screen::TextEdit;
   uiDrawTextEdit(gTextTitle, gTextBuf, gOskSymbols, gOskShift, gTextMode, scrub);
@@ -508,7 +506,6 @@ void loadWeb(const char* url, bool record) {
 
 void finishTextEdit(bool save) {
   canvasSetHoldCleanRefresh(false);
-  canvasDisarmLocalClean();
   canvasRequestCleanRefresh();
 
   if (gTextMode == TextEditMode::ApPassword) {
@@ -826,6 +823,11 @@ void resumeGps() {
 
 void leaveGps() {
   gpsLeave();
+  canvasDiscardGray();
+  canvasCancelPendingClean();
+  canvasSetHoldCleanRefresh(false);
+  // The map's fast windows leave white parked grey. Ask the next screen to scrub.
+  canvasRequestCleanRefresh();
   const Screen back = gGpsReturn;
   gGpsReturn = Screen::Home;
   switch (back) {
@@ -857,7 +859,7 @@ void leaveGps() {
       break;
     case Screen::Home:
     default:
-      showHome();
+      showHome(true);
       break;
   }
 }
@@ -872,7 +874,6 @@ void showShade() {
     gShadeReturn = gScreen;
   }
   canvasSetHoldCleanRefresh(false);
-  canvasDisarmLocalClean();
   gScreen = Screen::Shade;
   refreshSlots();
   uiDrawShade(gSpace);
@@ -950,6 +951,7 @@ void handleShadeHit(const UiHit& hit) {
       gShadeReturn = Screen::Home;
       canvasSetHoldCleanRefresh(false);
       if (boardPower().plugged) canvasNuclearFlash();
+      canvasRequestCleanRefresh();
       switch (back) {
         case Screen::Explorer:
           redrawExplorer();
@@ -985,7 +987,6 @@ void handleShadeHit(const UiHit& hit) {
           showHome();
           break;
       }
-      canvasPresent(EInkDisplay::HALF_REFRESH);
       break;
     }
     case UiHit::Kind::Settings:
@@ -1628,6 +1629,9 @@ void loop() {
   // only counts if it finishes inside 700 ms, so panning uses the held point.
   static bool mapDrag = false;
   static bool mapDragMoved = false;
+  static bool mapPinchConsumed = false;
+  static bool mapSettlePending = false;
+  static uint32_t mapSettleDueMs = 0;
   static int mapOriginX = 0, mapOriginY = 0;
   static int mapX0 = 0, mapY0 = 0, mapX1 = 0, mapY1 = 0;
   static bool webDrag = false;
@@ -1643,7 +1647,11 @@ void loop() {
   static int brightShown = -1;
   bool ignoreTap = false;
 
-  if (gScreen != Screen::Gps) mapDrag = false;
+  if (gScreen != Screen::Gps) {
+    mapDrag = false;
+    mapPinchConsumed = false;
+    mapSettlePending = false;
+  }
   if (gScreen != Screen::Web) webDrag = false;
   if (gScreen != Screen::Shade) {
     brightTracking = false;
@@ -1655,6 +1663,30 @@ void loop() {
 
   int hx = 0, hy = 0;
   const bool held = boardTouchHeld(hx, hy);
+  if (mapPinchConsumed && !held) mapPinchConsumed = false;
+  if (gScreen == Screen::Gps && held && mapSettlePending && !uiGpsMapContains(hx, hy)) {
+    // A control or shade gesture will redraw or leave the map itself.
+    mapSettlePending = false;
+    canvasSetHoldCleanRefresh(false);
+  }
+
+  float pinchScale = 1.0f;
+  int pinchX = 0, pinchY = 0;
+  if (gScreen == Screen::Gps && boardPollPinch(pinchScale, pinchX, pinchY)) {
+    noteActivity();
+    mapDrag = false;
+    mapDragMoved = false;
+    mapPinchConsumed = true;
+    mapSettlePending = false;
+    canvasSetHoldCleanRefresh(false);
+    int offsetX = 0, offsetY = 0;
+    if (uiGpsMapOffsetFromCenter(pinchX, pinchY, offsetX, offsetY) &&
+        gpsPinchZoom(pinchScale, offsetX, offsetY)) {
+      uiRedrawGpsMap();
+    }
+    ignoreTap = true;
+  }
+
   if (gScreen == Screen::Web && held) {
     if (!webDrag) {
       if (webContentContains(hx, hy)) {
@@ -1662,6 +1694,7 @@ void loop() {
         webDragMoved = false;
         webOriginY = hy;
         webY0 = webY1 = hy;
+        canvasSetHoldCleanRefresh(true);
       }
     } else {
       webY1 = hy;
@@ -1677,7 +1710,7 @@ void loop() {
       }
     }
   }
-  if (gScreen == Screen::Gps && held) {
+  if (gScreen == Screen::Gps && held && !mapPinchConsumed) {
     if (!mapDrag) {
       if (uiGpsMapContains(hx, hy)) {
         mapDrag = true;
@@ -1686,6 +1719,7 @@ void loop() {
         mapOriginY = hy;
         mapX0 = mapX1 = hx;
         mapY0 = mapY1 = hy;
+        canvasSetHoldCleanRefresh(true);
       }
     } else {
       mapX1 = hx;
@@ -1694,11 +1728,12 @@ void loop() {
       const bool shadePull = mapOriginY < 120 && hy > mapOriginY;
       const int dx = hx - mapX0;
       const int dy = hy - mapY0;
-      if (!shadePull && (abs(dx) >= 12 || abs(dy) >= 12)) {
-        if (gpsPan(dx, dy)) uiRedrawGpsMap();
+      if (!shadePull && (abs(dx) >= 2 || abs(dy) >= 2)) {
+        if (gpsPan(dx, dy)) uiFollowGpsMap(dx, dy);
         mapX0 = hx;
         mapY0 = hy;
         mapDragMoved = true;
+        mapSettlePending = true;
       }
     }
   }
@@ -1761,7 +1796,21 @@ void loop() {
       showShade();
       return;
     }
-    if (mapDragMoved) ignoreTap = true;
+    if (mapDragMoved) {
+      const int leftX = mapX1 - mapX0;
+      const int leftY = mapY1 - mapY0;
+      if (leftX != 0 || leftY != 0) gpsPan(leftX, leftY);
+      ignoreTap = true;
+      // The window refresh is asynchronous. Wait for a short idle gap before
+      // loading missing tiles and running the blocking full clean, so another
+      // drag can replace the in-flight frame immediately.
+      mapSettlePending = true;
+      mapSettleDueMs = millis() + 650;
+    } else {
+      canvasSetHoldCleanRefresh(false);
+      if (mapSettlePending) mapSettleDueMs = millis() + 650;
+      else canvasCancelPendingClean();
+    }
   }
 
   if (!swipePolled && boardPollSwipe(x0, y0, x1, y1)) {
@@ -1824,6 +1873,7 @@ void loop() {
   if (gScreen == Screen::Web && webDrag && !held) {
     const int dy = webY1 - webOriginY;
     webDrag = false;
+    canvasSetHoldCleanRefresh(false);
     if (webDragMoved || abs(dy) >= 24) ignoreTap = true;
   }
 
@@ -1836,14 +1886,20 @@ void loop() {
     handleTouch(x, y);
   }
 
-  if (gScreen == Screen::Gps && gpsActive() && !mapDrag) {
+  if (gScreen == Screen::Gps && mapSettlePending && !mapDrag && !held &&
+      static_cast<int32_t>(millis() - mapSettleDueMs) >= 0) {
+    mapSettlePending = false;
+    uiSettleGpsMap();
+  }
+
+  if (gScreen == Screen::Gps && gpsActive() && !mapDrag && !mapPinchConsumed && !mapSettlePending) {
     const GpsPoll polled = gpsPoll();
     static uint32_t lastGpsDraw = 0;
     const uint32_t now = millis();
     if (lastGpsDraw == 0) lastGpsDraw = now;
     if (polled.fixChanged || (polled.sentence && now - lastGpsDraw > 10000)) {
       const bool mapMoved = gpsMapFollowMoved();
-      uiRedrawGpsStatus();
+      uiRedrawGpsStatus(!mapMoved);
       if (mapMoved) uiRedrawGpsMap();
       lastGpsDraw = now;
     }

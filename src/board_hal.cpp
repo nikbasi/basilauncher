@@ -201,7 +201,7 @@ void boardInitFrontlight() {
     gpio_hold_dis(static_cast<gpio_num_t>(fl.gpio));
     gLightHw = ledcAttach(fl.gpio, fl.pwmFrequency, fl.pwmResolutionBits);
   }
-  int cleanEvery = 8;
+  int cleanEvery = 3;
   int sleepAfter = 10;
   int uiText = 1;
   uint32_t brightGen = 0;
@@ -209,7 +209,7 @@ void boardInitFrontlight() {
     gBrightness = gPrefs.getUChar("bright", 40);
     gLightOn = gPrefs.getBool("lightOn", false);
     brightGen = gPrefs.getUInt("brightGen", 0);
-    cleanEvery = static_cast<int>(gPrefs.getUChar("cleanEv", 8));
+    cleanEvery = static_cast<int>(gPrefs.getUChar("cleanEv", 3));
     sleepAfter = static_cast<int>(gPrefs.getUChar("sleepMin", 10));
     uiText = static_cast<int>(gPrefs.getUChar("uiText", 1));
     gPrefs.end();
@@ -640,10 +640,12 @@ bool boardFrontlightOn() { return gLightOn && gBrightness > 0; }
 bool boardHasFrontlight() { return gLightHw; }
 
 static void applyBrightness(int percent, bool persist) {
-  if (percent < 0) percent = 0;
+  // Brightness controls select a lit level. Only the Light on/off button may
+  // extinguish the frontlight, so the slider and minus step stop at 1%.
+  if (percent < 1) percent = 1;
   if (percent > 100) percent = 100;
   gBrightness = static_cast<uint8_t>(percent);
-  gLightOn = gBrightness > 0;
+  gLightOn = true;
   applyFrontlight();
   if (persist) persistLight();
 }
@@ -727,6 +729,19 @@ bool boardPollSwipe(int& x0, int& y0, int& x1, int& y1) {
   }
   canvasTouchToLogical(nsx, nsy, x0, y0);
   canvasTouchToLogical(nex, ney, x1, y1);
+  return true;
+}
+
+bool boardPollPinch(float& scale, int& centerX, int& centerY) {
+  if (!gTouchOk || !gInput.supportsMultiTouch()) return false;
+  float nx = 0, ny = 0;
+  unsigned long durationMs = 0;
+  if (gAsyncInput) {
+    if (!gInput.popMultiTouchPinch(scale, nx, ny, durationMs)) return false;
+  } else if (!gInput.wasMultiTouchPinch(scale, nx, ny, durationMs)) {
+    return false;
+  }
+  canvasTouchToLogical(nx, ny, centerX, centerY);
   return true;
 }
 

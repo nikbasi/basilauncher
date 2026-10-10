@@ -31,12 +31,13 @@ enum class CanvasRefreshIntent : uint8_t {
 void canvasBegin();
 void canvasClear();
 void canvasPresent(EInkDisplay::RefreshMode mode = EInkDisplay::HALF_REFRESH);
-// FAST by default; inserts a HALF scrub every few frames (and when requested).
-void canvasPresentAuto();
-// Activity-aware presentation. Interactive intents paint FAST immediately and
-// schedule one clean resting frame after the burst. Rectangles are logical
-// portrait coordinates and are converted to the panel's native orientation.
+// Activity-aware presentation. Navigation chooses one FAST or HALF waveform;
+// interactive rectangles use FAST and settle through canvasArmFullClean().
+// Rectangles are logical portrait coordinates.
 void canvasPresentFor(CanvasRefreshIntent intent, CanvasRect dirty = {});
+// Full-frame differential FAST for small chrome changes. Returns false and
+// queues a clean when a previous window update made a full FAST unsafe.
+bool canvasPresentFullFastDelta(uint32_t changedArea, uint32_t settleMs = 700);
 // Paint is already in the 1-bit framebuffer. Queue a fast window and return
 // without waiting for the waveform. A later call replaces one still waiting.
 void canvasPresentWindowFast(CanvasRect dirty);
@@ -45,16 +46,16 @@ void canvasPresentWindowFast(CanvasRect dirty);
 // pushed later and is not replaced by a text-field window.
 bool canvasFlashInvertedKey(CanvasRect dirty);
 void canvasArmKeyRestore(CanvasRect dirty);
-// After this rectangle stops changing, scrub just that rectangle.
-void canvasArmLocalClean(CanvasRect dirty, uint32_t delayMs);
-void canvasDisarmLocalClean();
-bool canvasLocalCleanArmed();
+// Full-screen clean after a pause. Re-tags white, so the top and bottom clear.
+// A windowed scrub leaves those edges alone.
+void canvasArmFullClean(uint32_t delayMs);
 void canvasServiceRefresh();
 void canvasCancelPendingClean();
-// While held, canvasPresentAuto never promotes to HALF — for text entry where
-// a mid-type scrub is worse than temporary ghosting (scrub on exit instead).
+// While held, a queued clean waits until the active gesture or text entry ends.
 void canvasSetHoldCleanRefresh(bool hold);
 void canvasRequestCleanRefresh();
+// Request an idle clean only if visible fast work exists and no clean is queued.
+bool canvasRequestIdleClean();
 void canvasSetCleanEvery(int n);  // 1..30 full-screen-equivalents of FAST work
 int canvasCleanEvery();
 
@@ -64,6 +65,9 @@ void canvasNuclearFlash();
 
 void canvasSetPixel(int x, int y, bool black);
 void canvasFillRect(int x, int y, int w, int h, bool black);
+// Column-major 1-bit image: column x is `stride` bytes, bit y set means black.
+// Writes the portrait rectangle straight into the panel buffer.
+void canvasBlitColumnBits(int destX, int destY, int width, int height, const uint8_t* bits, int stride);
 void canvasDrawRect(int x, int y, int w, int h, bool black);
 void canvasDrawRoundRect(int x, int y, int w, int h, int r, bool black);
 void canvasFillRoundRect(int x, int y, int w, int h, int r, bool black);

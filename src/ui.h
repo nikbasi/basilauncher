@@ -162,12 +162,19 @@ UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool
 UiHit uiHitSettings(int x, int y);
 UiHit uiHitHardware(int x, int y);
 void uiDrawGps();
-// Map rectangle only. Fast while the finger is moving; one clean after it stops.
+// Slide the map with the finger. The waveform may lag; the pixels do not wait
+// on a card read.
+void uiFollowGpsMap(int dx, int dy);
+// Tiles and a full-frame clean once the finger is up.
+void uiSettleGpsMap();
+// Map content changed (a new fix, or a scroll that had no cached pane).
 void uiRedrawGpsMap();
-// Fix and satellite lines. Leaves the map glass alone when the view did not move.
-void uiRedrawGpsStatus();
+// Update fix and satellite lines. Set present=false when a map refresh will
+// present the completed framebuffer in the same loop.
+void uiRedrawGpsStatus(bool present = true);
 UiHit uiHitGps(int x, int y);
 bool uiGpsMapContains(int x, int y);
+bool uiGpsMapOffsetFromCenter(int x, int y, int& offsetX, int& offsetY);
 UiHit uiHitWifi(int x, int y, bool active);
 void uiDrawNet(const FlashSpace& space, const WifiStatus& status, const WifiAp* aps, int count);
 UiHit uiHitNet(int x, int y);

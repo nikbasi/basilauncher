@@ -41,6 +41,15 @@ bool gRadioOn = false;
 // NMEA keeps arriving while a map tile is decoded. 38400 baud for about four
 // seconds fits; the hardware FIFO would not.
 constexpr size_t kGpsRxBytes = 16384;
+bool gSession = false;
+uint8_t* gPane = nullptr;
+int gPaneW = 0;
+int gPaneH = 0;
+int gStride = 0;
+int gOriginX = 0;
+int gOriginY = 0;
+int gPaneZoom = -1;
+bool gPaneReady = false;
 GpsView gView;
 GpsSat gSats[kMaxSats];
 int gSatCount = 0;
@@ -470,22 +479,252 @@ void writeGpx() {
   f.close();
 }
 
-bool zoomToward(int dir) {
+uint8_t* paneCol(int x) { return gPane + static_cast<size_t>(x) * gStride; }
+
+void paneSet(int lx, int ly, bool black) {
+  if (!gPane || lx < 0 || ly < 0 || lx >= gPaneW || ly >= gPaneH) return;
+  uint8_t& b = paneCol(lx)[ly >> 3];
+  const uint8_t mask = static_cast<uint8_t>(0x80 >> (ly & 7));
+  if (black) b = static_cast<uint8_t>(b | mask);
+  else b = static_cast<uint8_t>(b & static_cast<uint8_t>(~mask));
+}
+
+uint8_t takeBits(const uint8_t* src, int stride, int bit, int n) {
+  const int i = bit >> 3;
+  const int off = bit & 7;
+  const uint16_t hi = (i >= 0 && i < stride) ? src[i] : 0;
+  const uint16_t lo = (i + 1 >= 0 && i + 1 < stride) ? src[i + 1] : 0;
+  const uint16_t window = static_cast<uint16_t>((hi << 8) | lo);
+  const int shift = 16 - off - n;
+  if (shift < 0 || n <= 0 || n > 8) return 0;
+  return static_cast<uint8_t>((window >> shift) & ((1u << n) - 1));
+}
+
+void depositBits(uint8_t* dst, int bit, uint8_t chunk, int n) {
+  const int dOff = bit & 7;
+  const int shift = 8 - dOff - n;
+  const uint8_t mask = static_cast<uint8_t>(((1u << n) - 1) << shift);
+  const uint8_t placed = static_cast<uint8_t>(chunk << shift);
+  uint8_t& b = dst[bit >> 3];
+  b = static_cast<uint8_t>((b & static_cast<uint8_t>(~mask)) | placed);
+}
+
+void copyBitSpan(uint8_t* dst, int dstBit, const uint8_t* src, int srcStride, int srcBit, int n) {
+  while (n > 0) {
+    const int sOff = srcBit & 7;
+    const int dOff = dstBit & 7;
+    int chunk = 8 - sOff;
+    if (chunk > 8 - dOff) chunk = 8 - dOff;
+    if (chunk > n) chunk = n;
+    if (chunk <= 0) return;
+    depositBits(dst, dstBit, takeBits(src, srcStride, srcBit, chunk), chunk);
+    dstBit += chunk;
+    srcBit += chunk;
+    n -= chunk;
+  }
+}
+
+void shiftColumn(uint8_t* col, int height, int dy) {
+  if (dy == 0 || height <= 0) return;
+  const int stride = (height + 7) >> 3;
+  uint8_t tmp[128];
+  if (stride <= 0 || stride > static_cast<int>(sizeof(tmp))) return;
+  memcpy(tmp, col, stride);
+  memset(col, 0, stride);
+  const int ady = dy < 0 ? -dy : dy;
+  if (ady >= height) return;
+  const int n = height - ady;
+  const int src = dy > 0 ? 0 : ady;
+  const int dst = dy > 0 ? dy : 0;
+  copyBitSpan(col, dst, tmp, stride, src, n);
+}
+
+bool ensurePane(int w, int h) {
+  if (w <= 0 || h <= 0 || w > kScreenW || h > kScreenH) return false;
+  const int stride = (h + 7) >> 3;
+  if (!gPane) {
+    const size_t bytes = static_cast<size_t>(kScreenW) * ((kScreenH + 7) / 8);
+    gPane = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!gPane) gPane = static_cast<uint8_t*>(malloc(bytes));
+    if (!gPane) return false;
+  }
+  if (gPaneW != w || gPaneH != h || gStride != stride) {
+    gPaneW = w;
+    gPaneH = h;
+    gStride = stride;
+    gPaneReady = false;
+  }
+  return true;
+}
+
+void paneClear(int x, int y, int w, int h) {
+  if (x < 0) {
+    w += x;
+    x = 0;
+  }
+  if (y < 0) {
+    h += y;
+    y = 0;
+  }
+  if (!gPane || w <= 0 || h <= 0 || x >= gPaneW || y >= gPaneH) return;
+  if (x + w > gPaneW) w = gPaneW - x;
+  if (y + h > gPaneH) h = gPaneH - y;
+  if (y == 0 && h == gPaneH) {
+    for (int lx = x; lx < x + w; ++lx) memset(paneCol(lx), 0, gStride);
+    return;
+  }
+  for (int lx = x; lx < x + w; ++lx) {
+    for (int ly = y; ly < y + h; ++ly) paneSet(lx, ly, false);
+  }
+}
+
+void blitTilePane(const uint8_t* bits, int tileWx, int tileWy, int clipX, int clipY, int clipW, int clipH) {
+  const int destX0 = tileWx - gOriginX;
+  const int destY0 = tileWy - gOriginY;
+  int x0 = clipX > destX0 ? clipX : destX0;
+  int y0 = clipY > destY0 ? clipY : destY0;
+  int x1 = clipX + clipW;
+  int y1 = clipY + clipH;
+  const int tileX1 = destX0 + kTile;
+  const int tileY1 = destY0 + kTile;
+  if (x1 > tileX1) x1 = tileX1;
+  if (y1 > tileY1) y1 = tileY1;
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 > gPaneW) x1 = gPaneW;
+  if (y1 > gPaneH) y1 = gPaneH;
+  for (int ly = y0; ly < y1; ++ly) {
+    if ((ly & 31) == 0) esp_task_wdt_reset();
+    const int ty = ly - destY0;
+    for (int lx = x0; lx < x1; ++lx) {
+      if (bitAt(bits, lx - destX0, ty)) paneSet(lx, ly, true);
+    }
+  }
+}
+
+void paintCachedTiles(int clipX, int clipY, int clipW, int clipH) {
+  if (clipW <= 0 || clipH <= 0) return;
+  paneClear(clipX, clipY, clipW, clipH);
+  for (int i = 0; i < kTileSlots; ++i) {
+    const TileSlot& tile = gTiles[i];
+    if (!tile.have || !tile.bits || tile.z != gView.zoom) continue;
+    blitTilePane(tile.bits, tile.x * kTile, tile.y * kTile, clipX, clipY, clipW, clipH);
+  }
+}
+
+void paneLine(int x0, int y0, int x1, int y1) {
+  const int dx = x1 >= x0 ? x1 - x0 : x0 - x1;
+  const int sx = x0 < x1 ? 1 : -1;
+  const int dy = y1 >= y0 ? y0 - y1 : y1 - y0;
+  const int sy = y0 < y1 ? 1 : -1;
+  int err = dx + dy;
+  for (int guard = 0; guard < 4096; ++guard) {
+    paneSet(x0, y0, true);
+    if (x0 == x1 && y0 == y1) return;
+    const int e2 = 2 * err;
+    if (e2 >= dy) {
+      err += dy;
+      x0 += sx;
+    }
+    if (e2 <= dx) {
+      err += dx;
+      y0 += sy;
+    }
+  }
+}
+
+void projectPane(double lat, double lon, int& lx, int& ly) {
+  double px = 0, py = 0;
+  mercator(lat, lon, gView.zoom, px, py);
+  lx = static_cast<int>(floor(px)) - gOriginX;
+  ly = static_cast<int>(floor(py)) - gOriginY;
+}
+
+void drawPaneOverlays() {
+  const int right = gPaneW - 1;
+  const int bottom = gPaneH - 1;
+  for (int i = 1; i < gTrackCount; ++i) {
+    int xA = 0, yA = 0, xB = 0, yB = 0;
+    projectPane(static_cast<double>(gTrack[i - 1].latE7) / 1e7, static_cast<double>(gTrack[i - 1].lonE7) / 1e7,
+                xA, yA);
+    projectPane(static_cast<double>(gTrack[i].latE7) / 1e7, static_cast<double>(gTrack[i].lonE7) / 1e7, xB, yB);
+    if (!clipLine(xA, yA, xB, yB, 0, 0, right, bottom)) continue;
+    paneLine(xA, yA, xB, yB);
+  }
+  if (!gView.hasPos) return;
+  int sx = 0, sy = 0;
+  projectPane(gView.lat, gView.lon, sx, sy);
+  int x0 = sx - 10, y0 = sy, x1 = sx + 10, y1 = sy;
+  if (clipLine(x0, y0, x1, y1, 0, 0, right, bottom)) paneLine(x0, y0, x1, y1);
+  x0 = sx;
+  y0 = sy - 10;
+  x1 = sx;
+  y1 = sy + 10;
+  if (clipLine(x0, y0, x1, y1, 0, 0, right, bottom)) paneLine(x0, y0, x1, y1);
+}
+
+void scrollPanePixels(int dx, int dy) {
+  const int adx = dx < 0 ? -dx : dx;
+  const int ady = dy < 0 ? -dy : dy;
+  if (adx >= gPaneW || ady >= gPaneH) {
+    memset(gPane, 0, static_cast<size_t>(gPaneW) * gStride);
+    gOriginX -= dx;
+    gOriginY -= dy;
+    paintCachedTiles(0, 0, gPaneW, gPaneH);
+    return;
+  }
+  if (dx > 0) {
+    for (int x = gPaneW - 1; x >= dx; --x) memcpy(paneCol(x), paneCol(x - dx), gStride);
+  } else if (dx < 0) {
+    for (int x = 0; x < gPaneW + dx; ++x) memcpy(paneCol(x), paneCol(x - dx), gStride);
+  }
+  const int keepX0 = dx > 0 ? dx : 0;
+  const int keepX1 = dx < 0 ? gPaneW + dx : gPaneW;
+  if (dy != 0) {
+    for (int x = keepX0; x < keepX1; ++x) {
+      if (((x - keepX0) & 31) == 0) esp_task_wdt_reset();
+      shiftColumn(paneCol(x), gPaneH, dy);
+    }
+  }
+  gOriginX -= dx;
+  gOriginY -= dy;
+  if (dx > 0) paintCachedTiles(0, 0, dx, gPaneH);
+  else if (dx < 0) paintCachedTiles(gPaneW + dx, 0, -dx, gPaneH);
+  if (dy > 0) paintCachedTiles(keepX0, 0, keepX1 - keepX0, dy);
+  else if (dy < 0) paintCachedTiles(keepX0, gPaneH + dy, keepX1 - keepX0, -dy);
+}
+
+bool zoomTowardAt(int dir, int offsetX, int offsetY, bool manual) {
   readZoomRange();
   const int next = gView.zoom + dir;
   if (next < gView.zoomMin || next > gView.zoomMax) return false;
-  double wx = 0, wy = 0;
-  mercator(gCenterLat, gCenterLon, next, wx, wy);
-  const int tx = static_cast<int>(floor(wx / kTile));
-  const int ty = static_cast<int>(floor(wy / kTile));
+
+  double centerX = 0, centerY = 0;
+  mercator(gCenterLat, gCenterLon, gView.zoom, centerX, centerY);
+  const double factor = dir > 0 ? 2.0 : 0.5;
+  const double nextCenterX = (centerX + offsetX) * factor - offsetX;
+  const double nextCenterY = (centerY + offsetY) * factor - offsetY;
+  double nextLat = 0, nextLon = 0;
+  inverseMercator(nextCenterX, nextCenterY, next, nextLat, nextLon);
+  const int tx = static_cast<int>(floor(nextCenterX / kTile));
+  const int ty = static_cast<int>(floor(nextCenterY / kTile));
   if (!tileFileExists(next, tx, ty)) return false;
+
   gView.zoom = next;
+  gCenterLat = nextLat;
+  gCenterLon = nextLon;
+  if (manual) gFollow = false;
+  gPaneReady = false;
   return true;
 }
+
+bool zoomToward(int dir) { return zoomTowardAt(dir, 0, 0, false); }
 
 }  // namespace
 
 void gpsStart(bool fresh) {
+  gSession = true;
+  gPaneReady = false;
   if (fresh) {
     gTrackCount = 0;
     gView.trackCount = 0;
@@ -521,9 +760,13 @@ void gpsPause() {
 void gpsLeave() {
   gpsPause();
   writeGpx();
+  gSession = false;
+  gPaneReady = false;
 }
 
 bool gpsActive() { return gRadioOn; }
+
+bool gpsSession() { return gSession; }
 
 GpsPoll gpsPoll() {
   GpsPoll out;
@@ -559,6 +802,18 @@ bool gpsHasMaps() { return gSawMaps; }
 
 bool gpsZoomIn() { return zoomToward(1); }
 bool gpsZoomOut() { return zoomToward(-1); }
+
+bool gpsPinchZoom(float scale, int offsetX, int offsetY) {
+  if (scale == 1.0f) return false;
+  const int direction = scale > 1.0f ? 1 : -1;
+  const int steps = (scale >= 1.8f || scale <= 0.55f) ? 2 : 1;
+  bool changed = false;
+  for (int i = 0; i < steps; ++i) {
+    if (!zoomTowardAt(direction, offsetX, offsetY, true)) break;
+    changed = true;
+  }
+  return changed;
+}
 
 bool gpsMapFollowMoved() {
   if (!gFollow || !gView.hasPos) return false;
@@ -600,49 +855,55 @@ bool gpsDrawMap(int x, int y, int w, int h) {
   const int x1 = divFloor(originX + w - 1, kTile);
   const int y1 = divFloor(originY + h - 1, kTile);
   bool any = false;
-  int slot = 0;
+  int used = 0;
   for (int ty = y0; ty <= y1; ++ty) {
     for (int tx = x0; tx <= x1; ++tx) {
-      if (slot >= kTileSlots) break;
-      TileSlot& tile = gTiles[slot++];
+      if (used >= kTileSlots) break;
+      TileSlot& tile = gTiles[used++];
       if (tile.z != gView.zoom || tile.x != tx || tile.y != ty || (!tile.have && !tile.missing)) {
         loadTile(tile, gView.zoom, tx, ty);
       }
-      if (!tile.have || !tile.bits) continue;
-      any = true;
-      blitTile(tile.bits, tx * kTile, ty * kTile, x, y, w, h, originX, originY);
+      if (tile.have && tile.bits) any = true;
     }
   }
-  for (int i = slot; i < kTileSlots; ++i) {
+  for (int i = used; i < kTileSlots; ++i) {
     gTiles[i].have = false;
     gTiles[i].missing = false;
     gTiles[i].z = -1;
   }
   sdEnd();
 
-  auto toScreen = [&](double lat, double lon, int& sx, int& sy) {
-    double px = 0, py = 0;
-    mercator(lat, lon, gView.zoom, px, py);
-    sx = x + static_cast<int>(floor(px)) - originX;
-    sy = y + static_cast<int>(floor(py)) - originY;
-  };
-  for (int i = 1; i < gTrackCount; ++i) {
-    int xA = 0, yA = 0, xB = 0, yB = 0;
-    toScreen(static_cast<double>(gTrack[i - 1].latE7) / 1e7, static_cast<double>(gTrack[i - 1].lonE7) / 1e7, xA,
-             yA);
-    toScreen(static_cast<double>(gTrack[i].latE7) / 1e7, static_cast<double>(gTrack[i].lonE7) / 1e7, xB, yB);
-    if (!clipLine(xA, yA, xB, yB, x, y, x + w - 1, y + h - 1)) continue;
-    canvasDrawLine(xA, yA, xB, yB, true);
-  }
-
-  if (gView.hasPos) {
-    int sx = 0, sy = 0;
-    toScreen(gView.lat, gView.lon, sx, sy);
-    if (sx >= x + 10 && sx < x + w - 10 && sy >= y + 10 && sy < y + h - 10) {
-      canvasDrawLine(sx - 10, sy, sx + 10, sy, true);
-      canvasDrawLine(sx, sy - 10, sx, sy + 10, true);
+  gOriginX = originX;
+  gOriginY = originY;
+  gPaneZoom = gView.zoom;
+  if (ensurePane(w, h)) {
+    memset(gPane, 0, static_cast<size_t>(gPaneW) * gStride);
+    for (int i = 0; i < used; ++i) {
+      const TileSlot& tile = gTiles[i];
+      if (!tile.have || !tile.bits) continue;
+      blitTilePane(tile.bits, tile.x * kTile, tile.y * kTile, 0, 0, w, h);
+    }
+    drawPaneOverlays();
+    canvasBlitColumnBits(x, y, w, h, gPane, gStride);
+    gPaneReady = true;
+  } else {
+    gPaneReady = false;
+    for (int i = 0; i < used; ++i) {
+      const TileSlot& tile = gTiles[i];
+      if (!tile.have || !tile.bits) continue;
+      blitTile(tile.bits, tile.x * kTile, tile.y * kTile, x, y, w, h, originX, originY);
     }
   }
   drawScale(x + 10, y + h - 28, w);
   return any;
+}
+
+bool gpsScrollMap(int dx, int dy, int x, int y, int w, int h) {
+  if (!gPaneReady || !gPane || gPaneW != w || gPaneH != h || gPaneZoom != gView.zoom) return false;
+  if (dx == 0 && dy == 0) return true;
+  scrollPanePixels(dx, dy);
+  drawPaneOverlays();
+  canvasBlitColumnBits(x, y, w, h, gPane, gStride);
+  drawScale(x + 10, y + h - 28, w);
+  return true;
 }

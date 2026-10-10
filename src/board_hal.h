@@ -68,9 +68,9 @@ BoardClockInfo boardClock();
 bool boardAdjustClockMinutes(int deltaMinutes);
 bool boardSetClock(uint16_t year, uint8_t month, uint8_t day, uint8_t hour, uint8_t minute);
 
-int boardBrightness();          // 0..100 saved level
+int boardBrightness();          // 0..100 saved level; UI controls clamp to 1..100
 bool boardFrontlightOn();
-void boardSetBrightness(int percent);     // apply and save; turns on if >0
+void boardSetBrightness(int percent);     // apply and save; clamps to a lit level
 void boardPreviewBrightness(int percent); // PWM only; save with boardCommitBrightness
 void boardCommitBrightness();
 void boardSetFrontlightOn(bool on);
@@ -89,6 +89,9 @@ bool boardPollTouch(int& x, int& y);
 bool boardPollLongPress(int& x, int& y);
 // Swipe in portrait logical coords (check before tap).
 bool boardPollSwipe(int& x0, int& y0, int& x1, int& y1);
+// Completed two-finger pinch/spread. Scale <1 zooms out, >1 zooms in; the
+// center is returned in portrait logical coordinates.
+bool boardPollPinch(float& scale, int& centerX, int& centerY);
 bool boardTouchHeld(int& x, int& y);
 
 // BOOT / power key (GPIO0 on LilyGO T5 S3 Pro) — power / BOOT key on this board.
