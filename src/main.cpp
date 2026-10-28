@@ -12,6 +12,7 @@
 #include "flash_install.h"
 #include "gps.h"
 #include "image_draw.h"
+#include "sdk_requirements.h"
 #include "sd_serial.h"
 #include "sleep_screen.h"
 #include "ui.h"
@@ -84,7 +85,10 @@ WifiAp gNets[kNetMax];
 int gNetCount = 0;
 char gJoinSsid[33] = {};
 
-void noteActivity() { gLastActiveMs = millis(); }
+void noteActivity() {
+  gLastActiveMs = millis();
+  canvasNoteInput();
+}
 
 struct ProgressCtx {
   const char* title;
@@ -1663,6 +1667,7 @@ void loop() {
 
   int hx = 0, hy = 0;
   const bool held = boardTouchHeld(hx, hy);
+  if (held) canvasNoteInput();
   if (mapPinchConsumed && !held) mapPinchConsumed = false;
   if (gScreen == Screen::Gps && held && mapSettlePending && !uiGpsMapContains(hx, hy)) {
     // A control or shade gesture will redraw or leave the map itself.

@@ -1,6 +1,8 @@
 #include "canvas.h"
 
 #include "font8x16.h"
+#include "sdk_requirements.h"
+#include "ui_font.h"
 
 #include <algorithm>
 #include <cstring>
@@ -85,6 +87,11 @@ uint32_t gGhostDebt = 0;
 bool gCleanPending = false;
 bool gForceClean = true;
 uint32_t gCleanDueMs = 0;
+uint32_t gLastInputMs = 0;
+// A settle clean is one to two seconds of waveform the next tap has to wait
+// out. Starting one under a finger that is about to tap again is what made the
+// hub feel slow, so a settle waits for this much quiet after the last touch.
+constexpr uint32_t kSettleQuietMs = 900;
 
 constexpr uint32_t kFullArea = static_cast<uint32_t>(kScreenW) * kScreenH;
 
@@ -197,22 +204,34 @@ void clearGrayPlanes() {
   gGrayUsed = false;
 }
 
-void presentCleanFrame(const char* reason) {
-  gFastJob.pending = false;
-  gKeyRestore.pending = false;
+// Blocking: the frame is on the glass when this returns (sleep, quality).
+// Deferred: queue it or report the panel busy (settle). PreferDeferred: queue
+// it, or wait for the panel and refresh in place (navigation).
+enum class CleanPush : uint8_t { Blocking, Deferred, PreferDeferred };
+
+bool presentCleanFrame(const char* reason, CleanPush push = CleanPush::Blocking) {
   esp_task_wdt_reset();
   const uint32_t started = millis();
   const bool gray = gGrayUsed && gGrayLsb && gGrayMsb && display.supportsGrayFrame();
-  if (gray) {
-    display.copyGrayscaleBuffers(gGrayLsb, gGrayMsb);
-    display.displayGrayscaleFrame(EInkDisplay::HALF_REFRESH, false);
-  } else {
-    display.displayBuffer(EInkDisplay::HALF_REFRESH, false);
+  if (gray) display.copyGrayscaleBuffers(gGrayLsb, gGrayMsb);
+  // The driver copies the frame before it returns, so the framebuffer is free
+  // to redraw while a queued clean runs.
+  bool queued = false;
+  if (push != CleanPush::Blocking) {
+    queued = display.displayFrameDeferred(EInkDisplay::HALF_REFRESH, gray);
+    if (!queued && push == CleanPush::Deferred) return false;
   }
-  Serial.printf("[epd] intent=%s mode=clean gray=%d refresh=%lu ms debt=%lu state=%s\n", reason, gray ? 1 : 0,
-                static_cast<unsigned long>(millis() - started), static_cast<unsigned long>(gGhostDebt),
-                glassStateName());
+  if (!queued) {
+    if (gray) display.displayGrayscaleFrame(EInkDisplay::HALF_REFRESH, false);
+    else display.displayBuffer(EInkDisplay::HALF_REFRESH, false);
+  }
+  gFastJob.pending = false;
+  gKeyRestore.pending = false;
+  Serial.printf("[epd] intent=%s mode=%s gray=%d refresh=%lu ms debt=%lu state=%s\n", reason,
+                queued ? "clean-queued" : "clean", gray ? 1 : 0, static_cast<unsigned long>(millis() - started),
+                static_cast<unsigned long>(gGhostDebt), glassStateName());
   recordFullClean();
+  return true;
 }
 }  // namespace
 
@@ -368,7 +387,7 @@ void canvasPresentFor(CanvasRefreshIntent intent, CanvasRect dirty) {
   esp_task_wdt_reset();
   const uint32_t started = millis();
   if (cleanNavigation) {
-    presentCleanFrame(intentName(intent));
+    presentCleanFrame(intentName(intent), CleanPush::PreferDeferred);
     return;
   } else if (full) {
     display.displayBuffer(EInkDisplay::FAST_REFRESH, false);
@@ -456,7 +475,18 @@ void canvasServiceRefresh() {
   if (gFastJob.pending || display.windowRefreshBusy()) return;
   if (!gCleanPending || gHoldCleanRefresh) return;
   if (static_cast<int32_t>(millis() - gCleanDueMs) < 0) return;
-  presentCleanFrame("settle");
+  // An explicit scrub goes now; a background settle waits for the finger.
+  if (!gForceClean && millis() - gLastInputMs < kSettleQuietMs) return;
+  presentCleanFrame("settle", CleanPush::Deferred);
+}
+
+void canvasNoteInput() { gLastInputMs = millis(); }
+
+void canvasWaitIdle() {
+  while (display.windowRefreshBusy()) {
+    esp_task_wdt_reset();
+    delay(5);
+  }
 }
 
 void canvasCancelPendingClean() {
@@ -730,8 +760,97 @@ int canvasTextWidth(const char* text, int scale) {
   return n * kFont8x16W * scale;
 }
 
+namespace {
+
+const UiFont* uiFontFor(int scale, bool bold) {
+  if (scale <= 1) {
+    switch (gUiTextSize) {
+      case 0: return bold ? &kUiBold10 : &kUiBody10;
+      case 2: return bold ? &kUiBold14 : &kUiBody14;
+      default: return bold ? &kUiBold12 : &kUiBody12;
+    }
+  }
+  if (scale == 2) {
+    switch (gUiTextSize) {
+      case 0: return &kUiTitle16;
+      case 2: return &kUiTitle20;
+      default: return &kUiTitle18;
+    }
+  }
+  if (scale == 3) return &kUiSplash24;
+  return nullptr;
+}
+
+// Ink one glyph byte (8 pixels down a logical column) into its panel row.
+// Only set bits are written, so text keeps whatever background is under it.
+inline void inkColumnByte(uint8_t* row, uint8_t* grayL, uint8_t* grayM, int px, uint8_t bits, bool black) {
+  if (px >= 0 && px + 8 <= kPhysW) {
+    const int i = px >> 3;
+    const int off = px & 7;
+    const uint8_t hi = static_cast<uint8_t>(bits >> off);
+    const uint8_t lo = off ? static_cast<uint8_t>(bits << (8 - off)) : 0;
+    if (black) row[i] = static_cast<uint8_t>(row[i] & ~hi);
+    else row[i] = static_cast<uint8_t>(row[i] | hi);
+    if (grayL) grayL[i] = static_cast<uint8_t>(grayL[i] & ~hi);
+    if (grayM) grayM[i] = static_cast<uint8_t>(grayM[i] & ~hi);
+    if (!lo) return;
+    if (black) row[i + 1] = static_cast<uint8_t>(row[i + 1] & ~lo);
+    else row[i + 1] = static_cast<uint8_t>(row[i + 1] | lo);
+    if (grayL) grayL[i + 1] = static_cast<uint8_t>(grayL[i + 1] & ~lo);
+    if (grayM) grayM[i + 1] = static_cast<uint8_t>(grayM[i + 1] & ~lo);
+    return;
+  }
+  for (int b = 0; b < 8; ++b) {
+    const int p = px + b;
+    if (!(bits & (0x80u >> b)) || p < 0 || p >= kPhysW) continue;
+    const uint8_t mask = static_cast<uint8_t>(0x80u >> (p & 7));
+    if (black) row[p >> 3] = static_cast<uint8_t>(row[p >> 3] & ~mask);
+    else row[p >> 3] = static_cast<uint8_t>(row[p >> 3] | mask);
+    if (grayL) grayL[p >> 3] = static_cast<uint8_t>(grayL[p >> 3] & ~mask);
+    if (grayM) grayM[p >> 3] = static_cast<uint8_t>(grayM[p >> 3] & ~mask);
+  }
+}
+
+// A logical glyph column is a run of one panel row, so each column is `stride`
+// byte writes rather than a call per pixel.
+void drawUiGlyph(const UiFont& font, int x, int y, char ch, bool black) {
+  uint8_t* fb = display.getFrameBuffer();
+  if (!fb) return;
+  const uint16_t wb = display.getDisplayWidthBytes();
+  if (ch < kUiFontFirst || ch > kUiFontLast) ch = '?';
+  const uint8_t* glyph = font.bits + static_cast<size_t>(ch - kUiFontFirst) * font.cellW * font.stride;
+  for (int col = 0; col < font.cellW; ++col) {
+    const int lx = x + col;
+    if (lx < 0 || lx >= kPhysH) continue;
+    const uint32_t off = static_cast<uint32_t>((kPhysH - 1) - lx) * wb;
+    uint8_t* grayL = gGrayLsb ? gGrayLsb + off : nullptr;
+    uint8_t* grayM = gGrayMsb ? gGrayMsb + off : nullptr;
+    const uint8_t* bits = glyph + col * font.stride;
+    for (int k = 0; k < font.stride; ++k) {
+      const uint8_t b = pgm_read_byte(&bits[k]);
+      if (b) inkColumnByte(fb + off, grayL, grayM, y + k * 8, b, black);
+    }
+  }
+}
+
+}  // namespace
+
 void canvasDrawString(int x, int y, const char* text, bool black, int scale, bool bold) {
   if (!text) return;
+  if (const UiFont* font = uiFontFor(scale < 1 ? 1 : scale, bold && scale <= 1)) {
+    const int rowGap = scale <= 2 ? 2 : scale;
+    int cx = x;
+    for (const char* p = text; *p; ++p) {
+      if (*p == '\n') {
+        cx = x;
+        y += font->cellH + rowGap;
+        continue;
+      }
+      if (*p != ' ') drawUiGlyph(*font, cx, y, *p, black);
+      cx += font->cellW;
+    }
+    return;
+  }
   if (scale < 1) scale = 1;
   int cellW = kFont8x16W * scale;
   int cellH = kFont8x16H * scale;

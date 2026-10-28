@@ -1,6 +1,7 @@
 #include "flash_install.h"
 
 #include "apps_scan.h"
+#include "canvas.h"
 
 #include <SD.h>
 #include <esp_ota_ops.h>
@@ -209,6 +210,7 @@ FlashResult bootSlotPendingVerify(int slotIndex) {
     return FlashResult::BootFail;
   }
   Serial.printf("Booting slot %d (%s) pending verify\n", slotIndex, dest->label);
+  canvasWaitIdle();  // a queued refresh cut off by the reset leaves a half-driven page
   delay(50);
   esp_restart();
   return FlashResult::Ok;

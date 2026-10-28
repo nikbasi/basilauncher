@@ -50,6 +50,12 @@ void canvasArmKeyRestore(CanvasRect dirty);
 // A windowed scrub leaves those edges alone.
 void canvasArmFullClean(uint32_t delayMs);
 void canvasServiceRefresh();
+// Touch is down or just lifted. Background settle cleans wait for a short
+// quiet gap after this so they do not start under the next tap.
+void canvasNoteInput();
+// Wait until a queued refresh has finished. Call before a reboot or anything
+// else that cuts the panel off mid-waveform.
+void canvasWaitIdle();
 void canvasCancelPendingClean();
 // While held, a queued clean waits until the active gesture or text entry ends.
 void canvasSetHoldCleanRefresh(bool hold);

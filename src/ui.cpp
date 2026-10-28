@@ -529,8 +529,19 @@ void uiAcknowledgePress(const UiHit& hit) {
   const uint32_t area = static_cast<uint32_t>(hit.rw) * static_cast<uint32_t>(hit.rh);
   const uint32_t full = static_cast<uint32_t>(kScreenW) * static_cast<uint32_t>(kScreenH);
   if (area * 4u >= full * 3u) return;
+  // Queue the inverted control and return, so the action behind the press
+  // (SD reads, the next screen's drawing) runs while the flash is on the glass.
+  // The framebuffer goes straight back to normal; the restore is pushed once
+  // the panel is free, unless the next screen replaces it first.
+  const CanvasRect rect{hit.rx, hit.ry, hit.rw, hit.rh};
   canvasInvertRoundRect(hit.rx, hit.ry, hit.rw, hit.rh, hit.rr);
-  canvasPresentFor(CanvasRefreshIntent::InteractiveLocal, CanvasRect{hit.rx, hit.ry, hit.rw, hit.rh});
+  if (canvasFlashInvertedKey(rect)) {
+    canvasInvertRoundRect(hit.rx, hit.ry, hit.rw, hit.rh, hit.rr);
+    canvasArmKeyRestore(rect);
+    return;
+  }
+  // The panel is still busy. Wait for it rather than leave the press silent.
+  canvasPresentFor(CanvasRefreshIntent::InteractiveLocal, rect);
 }
 
 void uiShadeBrightnessTrack(int& x, int& y, int& w, int& h) {
@@ -994,10 +1005,15 @@ void drawExplorerViewport(const std::vector<DirEntry>& entries, const ExplorerDr
       const DirEntry& e = entries[i];
       const int rowY = listTop + (i - start) * kExplorerRowH;
       const bool sel = explorerEntrySelected(st, i);
-      if (sel) canvasFillRoundRect(kPad, rowY, cardW, kExplorerRowH - 8, kIconRadius, true);
-      else canvasDrawRoundRect(kPad, rowY, cardW, kExplorerRowH - 8, kIconRadius, true);
+      // Selection is a heavier outline and a bold name, not a filled row: a
+      // full-width black bar flipping back to white is the transition the fast
+      // waveform ghosts worst.
+      const int rows = sel ? 3 : 1;
+      for (int t = 0; t < rows; ++t) {
+        canvasDrawRoundRect(kPad + t, rowY + t, cardW - 2 * t, kExplorerRowH - 8 - 2 * t, kIconRadius - t, true);
+      }
 
-      const bool ink = !sel;
+      const bool ink = true;
       drawEntryIcon(entryIconKind(e), kPad + 26, rowY + (kExplorerRowH - 8) / 2, ink);
 
       const int textX = kPad + kIconCol + 8;
@@ -1006,7 +1022,7 @@ void drawExplorerViewport(const std::vector<DirEntry>& entries, const ExplorerDr
       char nameBuf[96];
       snprintf(nameBuf, sizeof(nameBuf), "%s", e.name.c_str());
       truncate(nameBuf, static_cast<size_t>(charsPerLine));
-      canvasDrawString(textX, rowY + 14, nameBuf, ink, kBody);
+      canvasDrawString(textX, rowY + 14, nameBuf, ink, kBody, sel);
 
       if (!e.isDir) {
         char sz[24];

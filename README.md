@@ -128,9 +128,24 @@ T5 Pro panel path drives the frontlight pin as data).
 
 SDK: submodule [`nikbasi/freeink-sdk`](https://github.com/nikbasi/freeink-sdk) (FreeInk-derived, with LilyGO T5 charge / clean-bank fixes used by this hub).
 
+**Updating the SDK.** Some of what keeps the panel fast and ghost-free came from
+the `aurora` line or from T5 fixes that upstream FreeInk does not carry: the
+2×L15 clean refresh, deferred window and frame refreshes, queued long presses,
+the staged rail park and the warm-panel waveform floor. An upstream merge can
+drop one without breaking a call site, so the build checks for them:
+`src/sdk_requirements.h` stops on a missing SDK feature marker, and
+`scripts/check_sdk.py` (run before every build, or by hand) checks the clean
+bank's frame counts and the clean-refresh normalize. If either fails after a
+submodule bump, resolve the SDK merge in favour of the listed feature; the list
+lives in `freeink-sdk/docs/launcher-features.md`.
+
+UI text uses JetBrains Mono rendered to 1-bit bitmaps at each cell size
+(`src/ui_font.h`, regenerate with `python3 scripts/gen_ui_font.py > src/ui_font.h`;
+font license in `fonts/`).
+
 ## License
 
-MIT — see [LICENSE](LICENSE). FreeInk SDK is MIT (FreeInk / OpenX4 lineage); M5GFX has its own license via PlatformIO.
+MIT — see [LICENSE](LICENSE). UI font: JetBrains Mono, Apache-2.0 (see [fonts/](fonts/)). FreeInk SDK is MIT (FreeInk / OpenX4 lineage); M5GFX has its own license via PlatformIO.
 
 ## Related
 
