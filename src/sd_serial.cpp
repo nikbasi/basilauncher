@@ -257,12 +257,21 @@ void handleLine(char* line) {
     return;
   }
   if (strncmp(line, "PUT ", 4) == 0) {
+    // PUT <path> <size>, parsed without sscanf to keep the scanf engine out
+    // of the factory slot.
     char path[192];
-    unsigned long size = 0;
-    if (sscanf(line + 4, "%191s %lu", path, &size) != 2) {
+    const char* p = line + 4;
+    while (*p == ' ' || *p == '\t') ++p;
+    size_t n = 0;
+    while (p[n] && p[n] != ' ' && p[n] != '\t' && p[n] != '\r' && p[n] != '\n') ++n;
+    char* end = nullptr;
+    const unsigned long size = n ? strtoul(p + n, &end, 10) : 0;
+    if (n == 0 || n >= sizeof(path) || end == p + n) {
       Serial.println("ERR syntax");
       return;
     }
+    memcpy(path, p, n);
+    path[n] = 0;
     handlePut(path, static_cast<size_t>(size));
     return;
   }

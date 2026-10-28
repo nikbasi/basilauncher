@@ -103,8 +103,10 @@ bool nmeaChecksum(const char* line) {
   if (!star || star[1] == 0 || star[2] == 0) return false;
   uint8_t sum = 0;
   for (const char* p = line + 1; p < star; ++p) sum = static_cast<uint8_t>(sum ^ static_cast<uint8_t>(*p));
-  unsigned int got = 0;
-  if (sscanf(star + 1, "%2x", &got) != 1) return false;
+  const char hex[3] = {star[1], star[2], 0};
+  char* end = nullptr;
+  const unsigned long got = strtoul(hex, &end, 16);
+  if (end == hex) return false;
   return sum == static_cast<uint8_t>(got);
 }
 
@@ -256,8 +258,13 @@ void readZoomRange() {
   const size_t n = f.read(reinterpret_cast<uint8_t*>(buf), sizeof(buf) - 1);
   f.close();
   buf[n] = 0;
-  int a = 0, b = 0;
-  if (sscanf(buf, "%d %d", &a, &b) == 2 && a >= 0 && b >= a && b <= 18) {
+  char* end = nullptr;
+  const long a = strtol(buf, &end, 10);
+  const bool haveA = end != buf;
+  const char* rest = end;
+  const long b = strtol(rest, &end, 10);
+  const bool haveB = haveA && end != rest;
+  if (haveB && a >= 0 && b >= a && b <= 18) {
     gView.zoomMin = a;
     gView.zoomMax = b;
   }

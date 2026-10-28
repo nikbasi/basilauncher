@@ -811,24 +811,36 @@ inline void inkColumnByte(uint8_t* row, uint8_t* grayL, uint8_t* grayM, int px, 
   }
 }
 
-// A logical glyph column is a run of one panel row, so each column is `stride`
-// byte writes rather than a call per pixel.
+// A logical glyph column is a run of one panel row, so each column of the
+// glyph's ink box is a few byte writes rather than a call per pixel.
 void drawUiGlyph(const UiFont& font, int x, int y, char ch, bool black) {
   uint8_t* fb = display.getFrameBuffer();
   if (!fb) return;
+  int index = -1;
+  if (font.chars) {
+    const char* hit = ch ? strchr(font.chars, ch) : nullptr;
+    if (!hit) return;  // a subset face simply has no other glyphs
+    index = static_cast<int>(hit - font.chars);
+  } else {
+    if (ch < kUiFontFirst || ch > kUiFontLast) ch = '?';
+    index = ch - kUiFontFirst;
+  }
+  const uint8_t* glyph = font.bits + pgm_read_word(&font.offsets[index]);
+  const int x0 = pgm_read_byte(&glyph[0]);
+  const int y0 = pgm_read_byte(&glyph[1]);
+  const int w = pgm_read_byte(&glyph[2]);
+  const int stride = (pgm_read_byte(&glyph[3]) + 7) / 8;
+  const uint8_t* bits = glyph + 4;
   const uint16_t wb = display.getDisplayWidthBytes();
-  if (ch < kUiFontFirst || ch > kUiFontLast) ch = '?';
-  const uint8_t* glyph = font.bits + static_cast<size_t>(ch - kUiFontFirst) * font.cellW * font.stride;
-  for (int col = 0; col < font.cellW; ++col) {
-    const int lx = x + col;
+  for (int col = 0; col < w; ++col, bits += stride) {
+    const int lx = x + x0 + col;
     if (lx < 0 || lx >= kPhysH) continue;
     const uint32_t off = static_cast<uint32_t>((kPhysH - 1) - lx) * wb;
     uint8_t* grayL = gGrayLsb ? gGrayLsb + off : nullptr;
     uint8_t* grayM = gGrayMsb ? gGrayMsb + off : nullptr;
-    const uint8_t* bits = glyph + col * font.stride;
-    for (int k = 0; k < font.stride; ++k) {
+    for (int k = 0; k < stride; ++k) {
       const uint8_t b = pgm_read_byte(&bits[k]);
-      if (b) inkColumnByte(fb + off, grayL, grayM, y + k * 8, b, black);
+      if (b) inkColumnByte(fb + off, grayL, grayM, y + y0 + k * 8, b, black);
     }
   }
 }
