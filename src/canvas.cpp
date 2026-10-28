@@ -37,6 +37,39 @@ inline void setPlanePixel(uint8_t* plane, uint16_t wb, int px, int py, bool set)
   else plane[idx] = static_cast<uint8_t>(plane[idx] & ~mask);
 }
 
+// Set or clear pixels [x0, x1) of one packed row; bit 7 of byte 0 is pixel 0.
+inline void setRowBits(uint8_t* row, int x0, int x1, bool set) {
+  if (!row || x0 >= x1) return;
+  const int i0 = x0 >> 3;
+  const int i1 = (x1 - 1) >> 3;
+  uint8_t head = static_cast<uint8_t>(0xFFu >> (x0 & 7));
+  const uint8_t tail = static_cast<uint8_t>(0xFFu << (7 - ((x1 - 1) & 7)));
+  if (i0 == i1) head &= tail;
+  row[i0] = set ? static_cast<uint8_t>(row[i0] | head) : static_cast<uint8_t>(row[i0] & ~head);
+  if (i0 == i1) return;
+  if (i1 > i0 + 1) memset(row + i0 + 1, set ? 0xFF : 0x00, static_cast<size_t>(i1 - i0 - 1));
+  row[i1] = set ? static_cast<uint8_t>(row[i1] | tail) : static_cast<uint8_t>(row[i1] & ~tail);
+}
+
+// A logical rectangle is one contiguous span per panel row: logical column lx
+// is panel row 539-lx and logical rows y..y+h are panel pixels y..y+h. Filling
+// spans instead of single pixels is what keeps full-screen clears and big text
+// off the critical path between a tap and its refresh.
+void fillLogicalSpans(int x, int y, int w, int h, bool white, int lsb, int msb, uint8_t* fb, uint8_t* planeL,
+                      uint8_t* planeM, uint16_t wb) {
+  const int lx0 = std::max(0, x);
+  const int lx1 = std::min(kPhysH, x + w);
+  const int px0 = std::max(0, y);
+  const int px1 = std::min(kPhysW, y + h);
+  if (lx0 >= lx1 || px0 >= px1) return;
+  for (int lx = lx0; lx < lx1; ++lx) {
+    const uint32_t off = static_cast<uint32_t>((kPhysH - 1) - lx) * wb;
+    setRowBits(fb + off, px0, px1, white);
+    if (planeL) setRowBits(planeL + off, px0, px1, lsb != 0);
+    if (planeM) setRowBits(planeM + off, px0, px1, msb != 0);
+  }
+}
+
 }  // namespace
 
 EInkDisplay display(-1, -1, -1, -1, -1, -1);
@@ -463,16 +496,7 @@ void canvasFillRect(int x, int y, int w, int h, bool black) {
   if (w <= 0 || h <= 0) return;
   uint8_t* fb = display.getFrameBuffer();
   if (!fb) return;
-  const uint16_t wb = display.getDisplayWidthBytes();
-  for (int ly = y; ly < y + h; ++ly) {
-    for (int lx = x; lx < x + w; ++lx) {
-      int px = 0, py = 0;
-      toPhysical(lx, ly, px, py);
-      setPhysPixel(fb, wb, px, py, black);
-      setPlanePixel(gGrayLsb, wb, px, py, false);
-      setPlanePixel(gGrayMsb, wb, px, py, false);
-    }
-  }
+  fillLogicalSpans(x, y, w, h, !black, 0, 0, fb, gGrayLsb, gGrayMsb, display.getDisplayWidthBytes());
 }
 
 namespace {
@@ -548,17 +572,9 @@ void canvasFillGrayRect(int x, int y, int w, int h, bool light) {
   if (w <= 0 || h <= 0 || !gGrayLsb || !gGrayMsb) return;
   uint8_t* fb = display.getFrameBuffer();
   if (!fb) return;
-  const uint16_t wb = display.getDisplayWidthBytes();
   gGrayUsed = true;
-  for (int ly = y; ly < y + h; ++ly) {
-    for (int lx = x; lx < x + w; ++lx) {
-      int px = 0, py = 0;
-      toPhysical(lx, ly, px, py);
-      setPhysPixel(fb, wb, px, py, false);
-      setPlanePixel(gGrayLsb, wb, px, py, !light);
-      setPlanePixel(gGrayMsb, wb, px, py, light);
-    }
-  }
+  fillLogicalSpans(x, y, w, h, true, light ? 0 : 1, light ? 1 : 0, fb, gGrayLsb, gGrayMsb,
+                   display.getDisplayWidthBytes());
 }
 
 void canvasDrawRect(int x, int y, int w, int h, bool black) {
