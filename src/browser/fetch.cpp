@@ -459,9 +459,7 @@ Reply oneRequest(const char* url, const char* postBody, char* locationOut, size_
   }
 
   int status = 0;
-  if (strncmp(gBuf, "HTTP/", 5) == 0) {
-    if (const char* sp = strchr(gBuf, ' ')) status = static_cast<int>(strtol(sp + 1, nullptr, 10));
-  }
+  sscanf(gBuf, "HTTP/%*d.%*d %d", &status);
 
   long length = -1;
   bool chunked = false;

@@ -140,7 +140,7 @@ submodule bump, resolve the SDK merge in favour of the listed feature; the list
 lives in `freeink-sdk/docs/launcher-features.md`.
 
 UI text uses JetBrains Mono rendered to 1-bit bitmaps at each cell size
-(`src/ui_font.h`, about 29 KB with each glyph cropped to its ink; regenerate with `python3 scripts/gen_ui_font.py > src/ui_font.h`;
+(`src/ui_font.h`, regenerate with `python3 scripts/gen_ui_font.py > src/ui_font.h`;
 font license in `fonts/`).
 
 ## License

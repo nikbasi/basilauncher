@@ -6,11 +6,9 @@ pixel columns and not others and reads as blocky on a 960x540 panel. This
 renders JetBrains Mono at each cell size the UI lays text out on, with the
 font's own hinting and no anti-aliasing, so every stroke lands on whole pixels.
 
-Each glyph is cropped to its ink box and stored column-major, the way the
-portrait canvas writes it: one glyph column is one run of a physical panel
-row, so drawing a glyph is a few byte writes per column instead of one call
-per pixel. Cropping keeps the whole set near 25 KB of flash; the launcher's
-factory slot is 1.5 MB and the Wi-Fi/TLS stack already fills most of it.
+Glyphs are stored column-major, the way the portrait canvas writes them: one
+glyph column is one run of a physical panel row, so drawing a glyph is a few
+byte writes per column instead of one call per pixel.
 
 Usage (needs Pillow and the JetBrains Mono TTFs, e.g. Debian fonts-jetbrains-mono):
     python3 scripts/gen_ui_font.py [font dir] > src/ui_font.h
@@ -23,9 +21,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 FIRST, LAST = 32, 126
 
-# (C name, TTF file, cell width, cell height[, characters]). Cell sizes are the
-# ones canvas.cpp lays text out on: body S/M/L, title S/M/L, and the splash.
-# A face with a character list stores only those glyphs.
+# (C name, TTF file, cell width, cell height). Cell sizes are the ones
+# canvas.cpp lays text out on: body S/M/L, title S/M/L, and the splash.
 FACES = [
     ("kUiBody10", "JetBrainsMono-SemiBold.ttf", 10, 20),
     ("kUiBody12", "JetBrainsMono-SemiBold.ttf", 12, 24),
@@ -36,14 +33,14 @@ FACES = [
     ("kUiTitle16", "JetBrainsMono-Bold.ttf", 16, 32),
     ("kUiTitle18", "JetBrainsMono-Bold.ttf", 18, 36),
     ("kUiTitle20", "JetBrainsMono-Bold.ttf", 20, 40),
-    ("kUiSplash24", "JetBrainsMono-Bold.ttf", 24, 48, "Basilauncher"),
+    ("kUiSplash24", "JetBrainsMono-Bold.ttf", 24, 48),
 ]
 
 # JetBrains Mono advances 600 units per 1000-unit em.
 ADVANCE_PER_EM = 0.6
 
 
-def render_face(path, cell_w, cell_h, chars):
+def render_face(path, cell_w, cell_h):
     font = ImageFont.truetype(str(path), cell_w / ADVANCE_PER_EM)
     adv = font.getlength("M")
     if abs(adv - cell_w) > 0.05:
@@ -56,29 +53,23 @@ def render_face(path, cell_w, cell_h, chars):
     baseline = (cell_h - (bottom - top)) // 2 - top
     baseline = max(-top, min(baseline, cell_h - bottom)) if bottom - top <= cell_h else -top
 
+    stride = (cell_h + 7) // 8
     glyphs = []
-    for c in chars:
+    for c in range(FIRST, LAST + 1):
         img = Image.new("1", (cell_w, cell_h), 0)
         draw = ImageDraw.Draw(img)
         draw.fontmode = "1"
-        draw.text((0, baseline), c, font=font, fill=1, anchor="ls")
-        box = img.getbbox()
-        if not box:
-            glyphs.append(bytes(4))
-            continue
-        x0, y0, x1, y1 = box
-        w, h = x1 - x0, y1 - y0
-        stride = (h + 7) // 8
+        draw.text((0, baseline), chr(c), font=font, fill=1, anchor="ls")
         px = img.load()
-        data = bytearray([x0, y0, w, h])
-        for x in range(x0, x1):
+        data = []
+        for x in range(cell_w):
             col = bytearray(stride)
-            for y in range(y0, y1):
+            for y in range(cell_h):
                 if px[x, y]:
-                    col[(y - y0) >> 3] |= 0x80 >> ((y - y0) & 7)
+                    col[y >> 3] |= 0x80 >> (y & 7)
             data.extend(col)
         glyphs.append(bytes(data))
-    return glyphs
+    return stride, glyphs
 
 
 def main():
@@ -91,18 +82,16 @@ def main():
         "// JetBrains Mono, Copyright 2020 JetBrains s.r.o., rendered to 1-bit bitmaps.",
         "// Licensed under the Apache License, Version 2.0; see fonts/JetBrainsMono-LICENSE.txt.",
         "//",
-        f"// Printable ASCII {FIRST}..{LAST}, or the face's `chars` when it has them.",
-        "// A glyph starts at bits[offsets[i]] with x0, y0, w, h (its ink box inside",
-        "// the cell), then w columns of (h + 7) / 8 bytes; bit 7 of a column's first",
-        "// byte is the box's top row, and a set bit is ink.",
+        f"// Printable ASCII {FIRST}..{LAST}. Each glyph is cellW columns of `stride`",
+        "// bytes; bit 7 of a column's first byte is the glyph's top pixel, and a set",
+        "// bit is ink.",
         "",
         "#include <Arduino.h>",
         "",
         "struct UiFont {",
         "  uint8_t cellW;",
         "  uint8_t cellH;",
-        "  const char* chars;  // nullptr: every glyph from kUiFontFirst to kUiFontLast",
-        "  const uint16_t* offsets;",
+        "  uint8_t stride;",
         "  const uint8_t* bits;",
         "};",
         "",
@@ -110,34 +99,18 @@ def main():
         f"constexpr int kUiFontLast = {LAST};",
         "",
     ]
-    total = 0
-    for face in FACES:
-        name, ttf, cw, ch = face[:4]
-        subset = face[4] if len(face) > 4 else None
-        chars = subset if subset else "".join(chr(c) for c in range(FIRST, LAST + 1))
-        glyphs = render_face(font_dir / ttf, cw, ch, chars)
-        offsets, pos = [], 0
-        for g in glyphs:
-            offsets.append(pos)
-            pos += len(g)
-        if pos > 0xFFFF:
-            raise SystemExit(f"{name} is {pos} bytes, past a uint16_t offset")
-        total += pos + 2 * len(offsets)
-        out.append(f"// {ttf} {cw}x{ch}" + (f", only \"{subset}\"" if subset else ""))
-        out.append(f"static const uint16_t {name}Offsets[] PROGMEM = {{")
-        for i in range(0, len(offsets), 12):
-            out.append("    " + ", ".join(str(o) for o in offsets[i:i + 12]) + ",")
-        out.append("};")
+    for name, ttf, cw, ch in FACES:
+        stride, glyphs = render_face(font_dir / ttf, cw, ch)
+        out.append(f"// {ttf} {cw}x{ch}")
         out.append(f"static const uint8_t {name}Bits[] PROGMEM = {{")
-        for c, g in zip(chars, glyphs):
-            label = {"\\": "backslash", " ": "space"}.get(c, c)
+        for i, g in enumerate(glyphs):
+            ch_repr = chr(FIRST + i)
+            label = {"\\": "backslash", " ": "space"}.get(ch_repr, ch_repr)
             out.append("    " + ", ".join(f"0x{b:02x}" for b in g) + f",  // {label}")
         out.append("};")
-        chars_c = '"' + subset + '"' if subset else "nullptr"
-        out.append(f"static constexpr UiFont {name} = {{{cw}, {ch}, {chars_c}, {name}Offsets, {name}Bits}};")
+        out.append(f"static constexpr UiFont {name} = {{{cw}, {ch}, {stride}, {name}Bits}};")
         out.append("")
     sys.stdout.write("\n".join(out))
-    sys.stderr.write(f"{total} bytes of glyph data\n")
 
 
 if __name__ == "__main__":
