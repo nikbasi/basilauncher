@@ -745,17 +745,22 @@ void canvasDrawLine(int x0, int y0, int x1, int y1, bool black) {
   }
 }
 
+int canvasCaptionCellW() { return gUiTextSize >= 2 ? 12 : 10; }
+int canvasCaptionCellH() { return gUiTextSize >= 2 ? 24 : 20; }
+
 int canvasTextHeight(int scale) {
-  if (scale <= 1) return canvasBodyCellH();
+  if (scale <= 0) return canvasCaptionCellH();
+  if (scale == 1) return canvasBodyCellH();
   if (scale == 2) return canvasTitleCellH();
   return kFont8x16H * scale;
 }
 
 int canvasTextWidth(const char* text, int scale) {
-  if (!text || scale < 1) return 0;
+  if (!text) return 0;
   int n = 0;
   for (const char* p = text; *p && *p != '\n'; ++p) ++n;
-  if (scale <= 1) return n * canvasBodyCellW();
+  if (scale <= 0) return n * canvasCaptionCellW();
+  if (scale == 1) return n * canvasBodyCellW();
   if (scale == 2) return n * canvasTitleCellW();
   return n * kFont8x16W * scale;
 }
@@ -763,7 +768,13 @@ int canvasTextWidth(const char* text, int scale) {
 namespace {
 
 const UiFont* uiFontFor(int scale, bool bold) {
-  if (scale <= 1) {
+  // Captions are the body face one size down, so secondary text reads as
+  // secondary at every text-size setting.
+  if (scale <= 0) {
+    if (gUiTextSize >= 2) return bold ? &kUiBold12 : &kUiBody12;
+    return bold ? &kUiBold10 : &kUiBody10;
+  }
+  if (scale == 1) {
     switch (gUiTextSize) {
       case 0: return bold ? &kUiBold10 : &kUiBody10;
       case 2: return bold ? &kUiBold14 : &kUiBody14;
@@ -835,9 +846,27 @@ void drawUiGlyph(const UiFont& font, int x, int y, char ch, bool black) {
 
 }  // namespace
 
+void canvasDrawColumnBitmap(int x, int y, int w, int h, const uint8_t* bits, bool black) {
+  uint8_t* fb = display.getFrameBuffer();
+  if (!fb || !bits || w <= 0 || h <= 0) return;
+  const uint16_t wb = display.getDisplayWidthBytes();
+  const int stride = (h + 7) / 8;
+  for (int col = 0; col < w; ++col, bits += stride) {
+    const int lx = x + col;
+    if (lx < 0 || lx >= kPhysH) continue;
+    const uint32_t off = static_cast<uint32_t>((kPhysH - 1) - lx) * wb;
+    uint8_t* grayL = gGrayLsb ? gGrayLsb + off : nullptr;
+    uint8_t* grayM = gGrayMsb ? gGrayMsb + off : nullptr;
+    for (int k = 0; k < stride; ++k) {
+      const uint8_t b = pgm_read_byte(&bits[k]);
+      if (b) inkColumnByte(fb + off, grayL, grayM, y + k * 8, b, black);
+    }
+  }
+}
+
 void canvasDrawString(int x, int y, const char* text, bool black, int scale, bool bold) {
   if (!text) return;
-  if (const UiFont* font = uiFontFor(scale < 1 ? 1 : scale, bold && scale <= 1)) {
+  if (const UiFont* font = uiFontFor(scale < 0 ? 0 : scale, bold && scale <= 1)) {
     const int rowGap = scale <= 2 ? 2 : scale;
     int cx = x;
     for (const char* p = text; *p; ++p) {

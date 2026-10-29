@@ -19,11 +19,13 @@ enum class Screen {
   ImageView,
   TextEdit,
   Confirm,
+  SlotMenu,  // long-press sheet over Home
+  SetTime,   // Settings > Time & date
 };
 
 enum class ExplorerMode { Browse, Install };
 
-enum class TextEditMode { EditFile, Rename, NewFolder, NewFile, ApPassword, StaPassword, WebUrl, WebField };
+enum class TextEditMode { EditFile, Rename, NewFolder, NewFile, ApPassword, StaPassword, WebUrl, WebField, SlotRename };
 
 struct UiHit {
   enum class Kind {
@@ -96,6 +98,14 @@ struct UiHit {
     GpsZoomIn,
     GpsZoomOut,
     GpsRecenter,
+    ResumeLast,       // Home: the Continue card
+    SlotMenuOpen,     // Home: the card's more button; index = slot
+    SlotMenuDismiss,  // tap outside the slot sheet
+    SlotUpdate,
+    SlotRename,
+    GoPath,            // Files breadcrumb; index = depth (0 = card root)
+    ExplorerSelectMode,
+    SetTime,           // Settings: open Time & date
   };
   Kind kind = Kind::None;
   int index = -1;
@@ -112,7 +122,13 @@ struct UiHit {
 // Centered brand splash shown once at boot before the home UI.
 void uiDrawSplash();
 
-void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space, bool stable = false);
+// lastSlot (or -1) gets the Continue card. Slots carry their update, if any
+// (appsFindUpdates).
+void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space, bool stable = false, int lastSlot = -1);
+// Long-press sheet for one installed slot, drawn over the Home frame:
+// Open, Update (when one exists), Rename, Clear.
+void uiDrawSlotMenu(const SlotInfo& slot);
+UiHit uiHitSlotMenu(int x, int y, bool hasUpdate);
 
 struct ExplorerDrawState {
   ExplorerMode mode = ExplorerMode::Browse;
@@ -135,6 +151,8 @@ void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawStat
 void uiRedrawExplorerViewport(const std::vector<DirEntry>& entries, const ExplorerDrawState& st);
 
 void uiDrawSettings(const FlashSpace& space);
+void uiDrawSetTime(const FlashSpace& space);
+UiHit uiHitSetTime(int x, int y);
 void uiDrawHardware(const FlashSpace& space);
 void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssidLine,
                 const char* urlLine, const char* detailLine, bool active);
@@ -142,11 +160,13 @@ void uiDrawShade(const FlashSpace& space);
 void uiRedrawShadeControls(const FlashSpace& space);
 void uiRedrawHomeStatus(const FlashSpace& space);
 void uiRedrawStatusBar(const FlashSpace& space, bool showClosedGrabber);
-void uiDrawProgress(const char* title, int percent);
+// note: a caption under the bar, e.g. a warning to keep the device on.
+void uiDrawProgress(const char* title, int percent, const char* note = nullptr);
 void uiDrawMessage(const char* title, const char* body);
 // OK button rect when the tap lands on it; kind stays None either way.
 UiHit uiHitMessage(int x, int y);
-void uiDrawConfirm(const char* title, const char* body);
+// yesLabel names the action ("Delete", "Clear slot"), not "Yes".
+void uiDrawConfirm(const char* title, const char* body, const char* yesLabel = "OK");
 void uiDrawImageViewHint(bool saved = false);  // Close / Set sleep chips after the photo
 UiHit uiHitImageView(int x, int y);
 void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shift,
@@ -158,7 +178,7 @@ void uiRedrawTextEditField(const char* text, TextEditMode mode);
 
 UiHit uiHitHome(int x, int y);
 UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool sheetOpen,
-                    bool clipboardHas, int selectedCount);
+                    bool clipboardHas, int selectedCount, bool multiSelect);
 UiHit uiHitSettings(int x, int y);
 UiHit uiHitHardware(int x, int y);
 void uiDrawGps();
@@ -193,4 +213,6 @@ void uiShadeBrightnessTrack(int& x, int& y, int& w, int& h);
 int uiBrightnessFromTouchX(int touchX);
 
 int uiExplorerRowHeight();
+// A swipe from the left edge means Back. True when (x0, y0) -> (x1, y1) is one.
+bool uiIsBackSwipe(int x0, int y0, int x1, int y1);
 int uiExplorerVisibleRows();

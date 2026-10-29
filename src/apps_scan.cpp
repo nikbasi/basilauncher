@@ -1,7 +1,11 @@
 #include "apps_scan.h"
 
+#include "app_names.h"
+
 #include <Preferences.h>
 #include <SD.h>
+#include <esp_app_desc.h>
+#include <esp_app_format.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <algorithm>
@@ -30,6 +34,35 @@ esp_partition_subtype_t slotSubtype(int slotIndex) {
 const esp_partition_t* slotPart(int slotIndex) {
   if (slotIndex < 0 || slotIndex >= kSlotCount) return nullptr;
   return esp_partition_find_first(ESP_PARTITION_TYPE_APP, slotSubtype(slotIndex), nullptr);
+}
+
+// Title and version for an image: its app description when the build named
+// itself, else the file it was installed from. A label that is not a file
+// name (no ".bin") was typed by the user in Rename and always wins.
+void describeImage(const esp_app_desc_t* desc, const char* fileName, std::string& title, std::string& version) {
+  appsTitleFromFileName(fileName, title, version);
+  const size_t len = fileName ? strlen(fileName) : 0;
+  const bool fromFile = len > 4 && strcasecmp(fileName + len - 4, ".bin") == 0;
+  const bool userName = len > 0 && !fromFile && strncmp(fileName, "ota_", 4) != 0;
+  if (userName) title = fileName;
+  if (!desc) return;
+  if (!userName && appsDescNameUseful(desc->project_name)) title = appsPrettyName(desc->project_name);
+  if (appsDescVersionUseful(desc->version)) {
+    version = desc->version[0] == 'v' ? desc->version + 1 : desc->version;
+  }
+}
+
+// An image's app description sits right after the image header and the first
+// segment header.
+constexpr size_t kAppDescOffset = sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t);
+
+bool readFileAppDesc(const char* path, esp_app_desc_t& desc) {
+  File f = SD.open(path, FILE_READ);
+  if (!f) return false;
+  bool ok = f.seek(kAppDescOffset) &&
+            f.read(reinterpret_cast<uint8_t*>(&desc), sizeof(desc)) == static_cast<int>(sizeof(desc));
+  f.close();
+  return ok && desc.magic_word == ESP_APP_DESC_MAGIC_WORD;
 }
 
 bool slotHasImage(int slotIndex) {
@@ -118,7 +151,57 @@ SlotInfo appsSlotInfo(int slotIndex) {
     snprintf(fallback, sizeof(fallback), "ota_%d", slotIndex);
     info.name = fallback;
   }
+  if (info.occupied) {
+    esp_app_desc_t desc;
+    const bool haveDesc = p && esp_ota_get_partition_description(p, &desc) == ESP_OK;
+    describeImage(haveDesc ? &desc : nullptr, info.name.c_str(), info.title, info.version);
+  }
   return info;
+}
+
+void appsFindUpdates(SlotInfo slots[kSlotCount]) {
+  for (int i = 0; i < kSlotCount; ++i) {
+    slots[i].updatePath.clear();
+    slots[i].updateVersion.clear();
+    slots[i].updateSize = 0;
+  }
+  if (!SD.exists("/firmware")) return;
+  const std::vector<DirEntry> files = appsScanDir("/firmware");
+  int checked = 0;
+  for (const DirEntry& f : files) {
+    if (f.isDir || f.name.size() < 5 || strcasecmp(f.name.c_str() + f.name.size() - 4, ".bin") != 0) continue;
+    if (++checked > 48) break;  // keep Home quick on a crowded card
+    esp_app_desc_t desc;
+    const bool haveDesc = readFileAppDesc(f.path.c_str(), desc);
+    std::string title, version;
+    describeImage(haveDesc ? &desc : nullptr, f.name.c_str(), title, version);
+    const std::string key = appsMatchKey(title);
+    for (int i = 0; i < kSlotCount; ++i) {
+      SlotInfo& s = slots[i];
+      if (!s.occupied || s.version.empty() || version.empty() || f.size > s.capacity) continue;
+      if (appsMatchKey(s.title) != key) continue;
+      if (appsCompareVersions(version, s.version) <= 0) continue;
+      if (!s.updateVersion.empty() && appsCompareVersions(version, s.updateVersion) <= 0) continue;
+      s.updatePath = f.path;
+      s.updateVersion = version;
+      s.updateSize = f.size;
+    }
+  }
+}
+
+int appsLastSlot() {
+  int last = -1;
+  if (prefs.begin("basil", true)) {
+    if (prefs.isKey("last")) last = prefs.getInt("last", -1);
+    prefs.end();
+  }
+  return last >= 0 && last < kSlotCount ? last : -1;
+}
+
+void appsSetLastSlot(int slotIndex) {
+  if (!prefs.begin("basil", false)) return;
+  prefs.putInt("last", slotIndex >= 0 && slotIndex < kSlotCount ? slotIndex : -1);
+  prefs.end();
 }
 
 void appsAllSlots(SlotInfo out[kSlotCount]) {

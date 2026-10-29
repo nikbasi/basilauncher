@@ -5,6 +5,7 @@
 #include "gps.h"
 #include "file_ops.h"
 #include "qr_draw.h"
+#include "ui_icons.h"
 #include "wifi_session.h"
 
 #include <algorithm>
@@ -15,20 +16,16 @@
 namespace {
 
 constexpr int kPad = 18;
-constexpr int kDockH = 88;           // message / confirm single-row dock
-constexpr int kExplorerDockH = 64;   // slim icon toolbar
-constexpr int kHomeFooterH = 64;     // Files chip strip
-constexpr int kCardGap = 14;
+constexpr int kExplorerDockH = 80;   // icon + label tools
+constexpr int kHomeFooterH = 76;     // Files / Web / Settings
 constexpr int kRadius = 16;
-constexpr int kTitle = 2;  // 16×32
-constexpr int kBody = 1;   // 8×16
-constexpr int kSmall = 1;
-constexpr int kBtnH = 52;
-constexpr int kBtnW = 120;
+constexpr int kTitle = 2;
+constexpr int kBody = 1;
+constexpr int kSmall = 0;  // caption: one size below body
+constexpr int kHeaderH = 64;  // back arrow + screen title, under the status bar
 constexpr int kBtnRadius = 14;
 constexpr int kIconRadius = 12;   // dock, file rows, up chip
 constexpr int kQsIconRadius = 18;  // quick-settings icon
-constexpr int kRowH = 58;
 constexpr int kBadge = 52;
 constexpr int kActionBtnH = 52;  // full-width actions (Light / Scrub / About / Sleep)
 
@@ -42,14 +39,42 @@ constexpr int kStepBtn = 52;  // +/- steppers — large enough for finger taps
 int gBrightX = 0, gBrightY = 0, gBrightW = 0, gBrightH = 0;
 int gShadePanelBottom = 0;
 
-int statusBarH() {
-  // Time row, brand row, grabber cue — scales with UI text size.
-  const int topPad = 8;
-  const int timeH = canvasTextHeight(2);
-  const int brandH = canvasTextHeight(kBody);
-  const int gap = 6;
-  const int botPad = 8;
-  return topPad + timeH + gap + brandH + gap + kGrabCueH + botPad;
+// One row: time and date on the left, Wi-Fi, charge and battery on the right,
+// and the shade's pull handle under it. Scales with the text-size setting.
+int statusBarH() { return 10 + canvasTextHeight(kBody) + 18; }
+
+int contentTop() { return statusBarH() + kHeaderH; }
+
+void drawIcon(const UiIcon& icon, int cx, int cy, bool black = true) {
+  canvasDrawColumnBitmap(cx - icon.w / 2, cy - icon.h / 2, icon.w, icon.h, icon.bits, black);
+}
+
+// Screen header: a back arrow (when the screen has somewhere to go back to)
+// and the title. The arrow's tap target is the full header height.
+constexpr int kHeaderBackW = 56;
+
+void drawHeader(const char* title, bool back) {
+  const int top = statusBarH();
+  const int cy = top + kHeaderH / 2;
+  int textX = kPad;
+  if (back) {
+    drawIcon(kIconBack28, kPad + 12, cy);
+    textX = kPad + kHeaderBackW - 8;
+  }
+  canvasDrawString(textX, cy - canvasTextHeight(kTitle) / 2, title, true, kTitle);
+}
+
+bool hitHeaderBack(int x, int y) {
+  const int top = statusBarH();
+  return y >= top && y < top + kHeaderH && x < kPad + kHeaderBackW;
+}
+
+// Optional icon action at the header's right edge (Scan on Wi-Fi).
+void headerActionRect(int& x, int& y, int& w, int& h) {
+  w = 56;
+  h = 48;
+  x = kScreenW - kPad - w;
+  y = statusBarH() + (kHeaderH - h) / 2;
 }
 
 void drawChevronUp(int cx, int cy) {
@@ -60,15 +85,8 @@ void drawChevronUp(int cx, int cy) {
   }
 }
 
-void drawChevronDown(int cx, int cy) {
-  for (int t = 0; t < 3; ++t) {
-    canvasDrawLine(cx - 12 + t, cy, cx, cy + 8 - t, true);
-    canvasDrawLine(cx + 12 - t, cy, cx, cy + 8 - t, true);
-  }
-}
-
-// Shared pull handle — same pill size both states.
-// Closed: down cue (pull the sheet down). Open: up cue (push it away).
+// Shared pull handle. Closed: a plain pill under the status row (pull the
+// shade down). Open: an up cue on the shade (push it away).
 void drawShadeGrabCue(int topY, bool menuOpen) {
   const int cx = kScreenW / 2;
   const int pillX = cx - kGrabPillW / 2;
@@ -76,45 +94,7 @@ void drawShadeGrabCue(int topY, bool menuOpen) {
     drawChevronUp(cx, topY);
     canvasFillRoundRect(pillX, topY + 10, kGrabPillW, kGrabPillH, kGrabPillH / 2, true);
   } else {
-    canvasFillRoundRect(pillX, topY, kGrabPillW, kGrabPillH, kGrabPillH / 2, true);
-    drawChevronDown(cx, topY + kGrabPillH + 3);
-  }
-}
-
-void drawLightningBolt(int ox, int oy) {
-  // Crisp geometric bolt (scanline-filled polygon). Vertices clockwise from tip.
-  static constexpr int8_t kVx[] = {9, 4, 7, 1, 11, 8, 14};
-  static constexpr int8_t kVy[] = {0, 9, 9, 20, 11, 11, 0};
-  constexpr int kN = 7;
-  constexpr int kH = 20;
-  for (int y = 0; y <= kH; ++y) {
-    int xs[kN];
-    int n = 0;
-    for (int i = 0; i < kN; ++i) {
-      const int x0 = kVx[i];
-      const int y0 = kVy[i];
-      const int x1 = kVx[(i + 1) % kN];
-      const int y1 = kVy[(i + 1) % kN];
-      if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
-        xs[n++] = x0 + (x1 - x0) * (y - y0) / (y1 - y0);
-      }
-    }
-    if (n < 2) continue;
-    // Insertion sort — n is tiny.
-    for (int a = 1; a < n; ++a) {
-      const int v = xs[a];
-      int b = a;
-      while (b > 0 && xs[b - 1] > v) {
-        xs[b] = xs[b - 1];
-        --b;
-      }
-      xs[b] = v;
-    }
-    canvasFillRect(ox + xs[0], oy + y, xs[n - 1] - xs[0] + 1, 1, true);
-  }
-  // Outline edges so the zig-zag reads clearly on FAST refreshes.
-  for (int i = 0; i < kN; ++i) {
-    canvasDrawLine(ox + kVx[i], oy + kVy[i], ox + kVx[(i + 1) % kN], oy + kVy[(i + 1) % kN], true);
+    canvasFillRoundRect(pillX, topY, kGrabPillW, kGrabPillH - 1, (kGrabPillH - 1) / 2, true);
   }
 }
 
@@ -154,7 +134,7 @@ ShadeGeom shadeGeom() {
                               std::max(canvasTextWidth("Wi-Fi", kBody),
                                        std::max(canvasTextWidth("GPS", kBody), canvasTextWidth("Settings", kBody))));
   g.tileW = std::max(g.icon, labelW + 8);
-  g.tileH = g.icon + 4 + canvasTextHeight(kBody);
+  g.tileH = g.icon + 6 + canvasTextHeight(kSmall);
   g.tileX = kPad + 8;
   const int gap = 12;
   g.netX = g.tileX + g.tileW + gap;
@@ -177,12 +157,57 @@ ShadeGeom shadeGeom() {
   return g;
 }
 
+// Settings: Display, Power and System sections. Clock setting lives on its
+// own page (Time & date); Wi-Fi sets the clock anyway.
+constexpr int kNavRowH = 60;
+
 struct SettingsGeom {
-  int titleY = 0;
+  int rowMinusX = 0;
+  int rowPlusX = 0;
+  int displayY = 0;
   int textSizeY = 0;
-  int sleepY = 0;
   int cleanY = 0;
-  int cleanMinusX = 0, cleanPlusX = 0;
+  int powerY = 0;
+  int sleepY = 0;
+  int sleepNowY = 0;
+  int systemY = 0;
+  int timeY = 0;
+  int aboutY = 0;
+  int tipY = 0;
+};
+
+int stepperValueW() { return 120; }
+
+SettingsGeom settingsGeom() {
+  SettingsGeom g;
+  g.rowMinusX = kScreenW - kPad - kStepBtn * 2 - stepperValueW();
+  g.rowPlusX = kScreenW - kPad - kStepBtn;
+  const int section = canvasTextHeight(kSmall) + 10;
+  int y = contentTop() + 4;
+  g.displayY = y;
+  y += section;
+  g.textSizeY = y;
+  y += kStepBtn + 10;
+  g.cleanY = y;
+  y += kStepBtn + 22;
+  g.powerY = y;
+  y += section;
+  g.sleepY = y;
+  y += kStepBtn + 6;
+  g.sleepNowY = y;
+  y += kNavRowH + 22;
+  g.systemY = y;
+  y += section;
+  g.timeY = y;
+  y += kNavRowH;
+  g.aboutY = y;
+  y += kNavRowH;
+  g.tipY = kScreenH - kPad - canvasTextHeight(kSmall);
+  return g;
+}
+
+struct SetTimeGeom {
+  int nowY = 0;
   int timeLabelY = 0;
   int hourY = 0;
   int minuteY = 0;
@@ -190,55 +215,29 @@ struct SettingsGeom {
   int yearY = 0;
   int monthY = 0;
   int dayY = 0;
-  int rowMinusX = 0;
-  int rowPlusX = 0;
-  int wifiY = 0;
-  int powerY = 0;
-  int backY = 0;
   int tipY = 0;
 };
 
-SettingsGeom settingsGeom() {
-  SettingsGeom g;
-  constexpr int step = kStepBtn;
-  constexpr int valueW = 120;
-  g.rowMinusX = kScreenW - kPad - step * 2 - valueW;
-  g.rowPlusX = kScreenW - kPad - step;
-  g.cleanMinusX = g.rowMinusX;
-  g.cleanPlusX = g.rowPlusX;
-
-  int y = statusBarH() + kPad;
-  g.titleY = y;
-  y += canvasTextHeight(kTitle) + 16;
-
-  g.textSizeY = y;
-  y += step + 10;
-  g.sleepY = y;
-  y += step + 10;
-  g.cleanY = y;
-  y += step + 18;
-
+SetTimeGeom setTimeGeom() {
+  SetTimeGeom g;
+  const int section = canvasTextHeight(kSmall) + 10;
+  int y = contentTop() + 4;
+  g.nowY = y;
+  y += canvasTextHeight(kTitle) + 4 + canvasTextHeight(kSmall) + 24;
   g.timeLabelY = y;
-  y += canvasTextHeight(kBody) + 10;
+  y += section;
   g.hourY = y;
-  y += step + 8;
+  y += kStepBtn + 8;
   g.minuteY = y;
-  y += step + 18;
-
+  y += kStepBtn + 22;
   g.dateLabelY = y;
-  y += canvasTextHeight(kBody) + 10;
+  y += section;
   g.yearY = y;
-  y += step + 8;
+  y += kStepBtn + 8;
   g.monthY = y;
-  y += step + 8;
+  y += kStepBtn + 8;
   g.dayY = y;
-  y += step + 16;
-
-  g.wifiY = -1;
-  g.powerY = y;
-  y += kActionBtnH + 12;
-  g.backY = y;
-  y += kActionBtnH + 12;
+  y += kStepBtn + 24;
   g.tipY = y;
   return g;
 }
@@ -253,30 +252,53 @@ void drawSectionRule(int y, int panelX, int panelW) {
   canvasDrawLine(panelX + 14, y, panelX + panelW - 14, y, true);
 }
 
-int homeListTop() {
-  // Status → pad → Apps title → gap → first card.
-  return statusBarH() + 18 + canvasTextHeight(kTitle) + 18;
-}
+// Home: optional Continue card, the "Apps" label, four slot cards, footer.
+constexpr int kResumeH = 104;
+constexpr int kSlotGap = 12;
+constexpr int kSlotMaxH = 136;
+constexpr int kCardMoreW = 56;  // the card's more button, at its right edge
 
-int slotCardH() {
-  const int top = homeListTop();
-  const int avail = kScreenH - top - kHomeFooterH - kPad;
-  return (avail - (kSlotCount - 1) * kCardGap) / kSlotCount;
-}
+struct HomeLayout {
+  int resumeY = -1;
+  int labelY = 0;
+  int listY = 0;
+  int rowH = 0;
+  int footerY = 0;
+};
 
-int slotCardY(int index) { return homeListTop() + index * (slotCardH() + kCardGap); }
-
-void truncate(char* s, size_t maxChars) {
-  if (!s) return;
-  if (strlen(s) <= maxChars) return;
-  if (maxChars < 3) {
-    s[maxChars] = 0;
-    return;
+HomeLayout homeLayout(bool resume) {
+  HomeLayout g;
+  int y = statusBarH() + 16;
+  if (resume) {
+    g.resumeY = y;
+    y += kResumeH + 20;
   }
-  s[maxChars - 3] = '.';
-  s[maxChars - 2] = '.';
-  s[maxChars - 1] = '.';
-  s[maxChars] = 0;
+  g.labelY = y;
+  y += canvasTextHeight(kBody) + 12;
+  g.listY = y;
+  g.footerY = kScreenH - kHomeFooterH;
+  g.rowH = std::min(kSlotMaxH, (g.footerY - 14 - y - (kSlotCount - 1) * kSlotGap) / kSlotCount);
+  return g;
+}
+
+int slotCardY(const HomeLayout& g, int index) { return g.listY + index * (g.rowH + kSlotGap); }
+
+// Slot the Continue card on the frame now on screen points at, or -1.
+int gHomeResumeSlot = -1;
+
+// Shorten s with "..." until it fits maxW pixels at this text scale.
+void fitText(char* s, int maxW, int scale) {
+  if (!s || maxW <= 0) return;
+  size_t n = strlen(s);
+  if (canvasTextWidth(s, scale) <= maxW) return;
+  while (n > 3) {
+    --n;
+    s[n] = 0;
+    s[n - 1] = '.';
+    s[n - 2] = '.';
+    s[n - 3] = '.';
+    if (canvasTextWidth(s, scale) <= maxW) return;
+  }
 }
 
 void drawBatteryGlyph(int x, int y, int percent, bool charging, bool plugged) {
@@ -292,97 +314,48 @@ void drawBatteryGlyph(int x, int y, int percent, bool charging, bool plugged) {
   }
 }
 
-void drawStatusArc(int cx, int cy, int r, bool ink) {
-  auto point = [&](int deg, int& x, int& y) {
-    const float rad = static_cast<float>(deg) * 0.0174532925f;
-    x = cx + static_cast<int>(lroundf(cosf(rad) * static_cast<float>(r)));
-    y = cy + static_cast<int>(lroundf(sinf(rad) * static_cast<float>(r)));
-  };
-  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-  point(210, x0, y0);
-  for (int deg = 230; deg <= 330; deg += 25) {
-    point(deg, x1, y1);
-    canvasDrawLine(x0, y0, x1, y1, ink);
-    x0 = x1;
-    y0 = y1;
-  }
-}
-
-// Compact fan. rightLimit is exclusive: every pixel stays at x < rightLimit,
-// which is the left edge of the lightning slot.
-void drawStatusWifiIcon(int rightLimit, int midY) {
-  constexpr int kR = 10;
-  const int cx = rightLimit - (kR + 2);
-  const int arcY = midY + 3;
-  canvasFillRect(cx - 1, arcY - 1, 3, 3, true);
-  drawStatusArc(cx, arcY, 4, true);
-  drawStatusArc(cx, arcY, 7, true);
-  drawStatusArc(cx, arcY, kR, true);
-}
-
 void drawStatusBar(const FlashSpace& space, bool showClosedGrabber) {
+  (void)space;
   const int barH = statusBarH();
   canvasFillRect(0, 0, kScreenW, barH, false);
   const BoardClockInfo clock = boardClock();
   const BoardPowerInfo power = boardPower();
 
-  const int timeY = 8;
-  const int timeH = canvasTextHeight(2);
-  canvasDrawString(kPad, timeY, clock.valid ? clock.time : "--:--", true, 2);
+  const int rowY = 10;
+  const int rowH = canvasTextHeight(kBody);
+  const int midY = rowY + rowH / 2;
+  const char* time = clock.valid ? clock.time : "--:--";
+  canvasDrawString(kPad, rowY, time, true, kBody, true);
   if (clock.valid && clock.date[0]) {
-    const int timeW = canvasTextWidth(clock.valid ? clock.time : "--:--", 2);
-    const int dateY = timeY + (timeH - canvasTextHeight(kBody)) / 2;
-    canvasDrawString(kPad + timeW + 14, dateY, clock.date, true, kBody);
+    const int dateX = kPad + canvasTextWidth(time, kBody) + 14;
+    canvasDrawString(dateX, midY - canvasTextHeight(kSmall) / 2, clock.date, true, kSmall);
   }
 
-  char batt[20];
+  // Right cluster, from the edge inwards: percent, battery, bolt, Wi-Fi. Each
+  // keeps a fixed slot so a cable or a network change never shifts the others
+  // and leaves fast-refresh ghosts.
+  const int clusterRight = kScreenW - kPad;
+  const int textSlot = canvasTextWidth("100%", kSmall);
+  constexpr int kBatterySpan = 31;
+  constexpr int kIconSlot = 24;
+  const int battX = clusterRight - textSlot - 6 - kBatterySpan;
+  const int boltX = battX - 4 - kIconSlot;
+  const int wifiX = boltX - 2 - kIconSlot;
+  canvasFillRect(wifiX, rowY - 4, clusterRight - wifiX, rowH + 8, false);
+  if (wifiIsActive()) drawIcon(kIconWifi20, wifiX + kIconSlot / 2, midY);
   if (power.known) {
+    drawBatteryGlyph(battX, midY - 7, power.percent, power.charging, power.plugged);
+    if (power.charging) drawIcon(kIconBolt20, boltX + kIconSlot / 2, midY);
+    char batt[8];
     snprintf(batt, sizeof(batt), "%d%%", power.percent);
-    // Keep bolt and battery fixed so cable changes do not shove the glyphs
-    // left and leave FAST-refresh ghosts.
-    constexpr int kBoltSlot = 18;
-    constexpr int kBatterySpan = 31;
-    constexpr int kTextGap = 3;
-    const int textSlot = canvasTextWidth("100%", kBody);
-    const int clusterRight = kScreenW - kPad;
-    const int battX = clusterRight - textSlot - kTextGap - kBatterySpan;
-    const int boltX = battX - kBoltSlot;
-    const int battY = timeY + (timeH - 14) / 2;
-    // Wi-Fi sits entirely left of the bolt slot so a charging cable cannot
-    // draw the lightning through the fan. The slot itself stays put.
-    constexpr int kWifiGap = 6;
-    constexpr int kWifiSlot = 26;
-    const int wifiRight = boltX - kWifiGap;
-    const int wifiLeft = wifiRight - kWifiSlot;
-    canvasFillRect(wifiLeft, battY - 8, (boltX - wifiLeft) + kBoltSlot + kBatterySpan + 2, 28, false);
-    if (wifiIsActive()) drawStatusWifiIcon(wifiRight, battY + 7);
-    drawBatteryGlyph(battX, battY, power.percent, power.charging, power.plugged);
-    if (power.charging) drawLightningBolt(boltX, battY - 3);
-    canvasDrawString(clusterRight - canvasTextWidth(batt, kBody),
-                     timeY + (timeH - canvasTextHeight(kBody)) / 2, batt, true, kBody);
+    canvasDrawString(clusterRight - canvasTextWidth(batt, kSmall), midY - canvasTextHeight(kSmall) / 2, batt, true,
+                     kSmall);
   } else {
-    const char* na = "batt --";
-    const int naX = kScreenW - kPad - canvasTextWidth(na, kBody);
-    const int naY = timeY + (timeH - canvasTextHeight(kBody)) / 2;
-    constexpr int kWifiGap = 6;
-    constexpr int kWifiSlot = 26;
-    const int wifiRight = naX - kWifiGap;
-    const int wifiLeft = wifiRight - kWifiSlot;
-    canvasFillRect(wifiLeft, timeY, kWifiSlot, timeH, false);
-    if (wifiIsActive()) drawStatusWifiIcon(wifiRight, timeY + timeH / 2);
-    canvasDrawString(naX, naY, na, true, kBody);
+    canvasDrawString(clusterRight - canvasTextWidth("--", kSmall), midY - canvasTextHeight(kSmall) / 2, "--", true,
+                     kSmall);
   }
 
-  const int brandY = timeY + timeH + 6;
-  char brand[40];
-  snprintf(brand, sizeof(brand), "Basilauncher  v%s", BASILAUNCHER_VERSION);
-  canvasDrawString(kPad, brandY, brand, true, kBody);
-
-  // Closed menu: up cue only. Open shade draws its own down cue instead.
-  if (showClosedGrabber) {
-    const int grabY = brandY + canvasTextHeight(kBody) + 4;
-    drawShadeGrabCue(grabY, /*menuOpen=*/false);
-  }
+  if (showClosedGrabber) drawShadeGrabCue(barH - 10, /*menuOpen=*/false);
   canvasDrawLine(0, barH - 1, kScreenW - 1, barH - 1, true);
 }
 
@@ -413,94 +386,161 @@ void drawChromeOutlineBtn(int x, int y, int w, int h, const char* label) {
   drawOutlineBtn(x, y, w, h, label);
 }
 
-void drawSlotCard(int index, const SlotInfo& slot) {
-  const int x = kPad;
-  const int y = slotCardY(index);
-  const int w = kScreenW - 2 * kPad;
-  const int h = slotCardH();
-
-  if (slot.occupied) {
-    // Light gray fill marks installed apps as tappable.
-    fillLightGrayRoundRect(x, y, w, h, kRadius);
+// A button with an icon and a label side by side, both centred.
+void drawToolBtn(int x, int y, int w, int h, const UiIcon& icon, const char* label, bool filled = false) {
+  if (filled) canvasFillRoundRect(x, y, w, h, kBtnRadius, true);
+  else {
+    canvasFillRoundRect(x, y, w, h, kBtnRadius, false);
+    canvasDrawRoundRect(x, y, w, h, kBtnRadius, true);
   }
-  canvasDrawRoundRect(x, y, w, h, kRadius, true);
+  const int gap = 8;
+  const int tw = canvasTextWidth(label, kBody);
+  const int total = icon.w + gap + tw;
+  const int ix = x + (w - total) / 2;
+  drawIcon(icon, ix + icon.w / 2, y + h / 2, !filled);
+  canvasDrawString(ix + icon.w + gap, y + (h - canvasTextHeight(kBody)) / 2, label, !filled, kBody, true);
+}
 
-  const int bx = x + 16;
-  const int by = y + 18;
-  char letter[2] = {slot.label[0], 0};
-  const int lw = canvasTextWidth(letter, 2);
-  const int lx = bx + (kBadge - lw) / 2;
-  const int ly = by + (kBadge - 32) / 2;
-  if (slot.occupied) {
-    canvasFillRoundRect(bx, by, kBadge, kBadge, 12, true);
-    canvasDrawString(lx, ly, letter, false, 2);
+void drawSlotBadge(int x, int y, char letter, bool filled) {
+  const char text[2] = {letter, 0};
+  const int lx = x + (kBadge - canvasTextWidth(text, kTitle)) / 2;
+  const int ly = y + (kBadge - canvasTextHeight(kTitle)) / 2;
+  if (filled) {
+    canvasFillRoundRect(x, y, kBadge, kBadge, 12, true);
   } else {
-    canvasFillRoundRect(bx, by, kBadge, kBadge, 12, false);
-    canvasDrawRoundRect(bx, by, kBadge, kBadge, 12, true);
-    canvasDrawString(lx, ly, letter, true, 2);
+    canvasFillRoundRect(x, y, kBadge, kBadge, 12, false);
+    canvasDrawRoundRect(x, y, kBadge, kBadge, 12, true);
   }
+  canvasDrawString(lx, ly, text, !filled, kTitle);
+}
+
+void drawSlotCard(const HomeLayout& g, int index, const SlotInfo& slot) {
+  const int x = kPad;
+  const int y = slotCardY(g, index);
+  const int w = kScreenW - 2 * kPad;
+  const int h = g.rowH;
+  canvasDrawRoundRect(x, y, w, h, kRadius, true);
+  drawSlotBadge(x + 16, y + (h - kBadge) / 2, slot.label[0], slot.occupied);
 
   const int textX = x + 16 + kBadge + 16;
-  const int textW = w - (textX - x) - 16;
-  if (slot.occupied) {
-    char name[40];
-    snprintf(name, sizeof(name), "%s", slot.name.c_str());
-    truncate(name, 20);
-    canvasDrawString(textX, y + 20, name, true, kTitle);
+  const int textW = x + w - kCardMoreW - textX;
+  const int titleH = canvasTextHeight(kTitle);
+  const int capH = canvasTextHeight(kSmall);
 
-    char sz[48], used[24], cap[24];
-    appsFormatBytes(slot.size ? slot.size : slot.capacity, used, sizeof(used));
-    appsFormatBytes(slot.capacity, cap, sizeof(cap));
-    snprintf(sz, sizeof(sz), "%s / %s", used, cap);
-    canvasDrawString(textX, y + 56, sz, true, kBody);
-
-    const int barY = y + 80;
-    const int barW = textW;
-    const int barH = 10;
-    canvasFillRoundRect(textX, barY, barW, barH, 4, false);
-    canvasDrawRoundRect(textX, barY, barW, barH, 4, true);
-    size_t usedBytes = slot.size ? slot.size : slot.capacity;
-    if (slot.capacity > 0 && usedBytes > 0) {
-      int fill = static_cast<int>((static_cast<uint64_t>(barW - 4) * usedBytes) / slot.capacity);
-      if (fill < 2) fill = 2;
-      if (fill > barW - 4) fill = barW - 4;
-      canvasFillRoundRect(textX + 2, barY + 2, fill, barH - 4, 3, true);
-    }
-
-    const int by = y + h - kBtnH - 14;
-    drawChromeOutlineBtn(x + w - kBtnW - 14, by, kBtnW, kBtnH, "Clear");
-  } else {
-    canvasDrawString(textX, y + 20, "Empty slot", true, kTitle);
-    char cap[40], capBuf[24];
+  if (!slot.occupied) {
+    const int blockH = canvasTextHeight(kBody) + 4 + capH;
+    const int ty = y + (h - blockH) / 2;
+    canvasDrawString(textX, ty, "Empty slot", true, kBody, true);
+    char cap[48], capBuf[24];
     appsFormatBytes(slot.capacity, capBuf, sizeof(capBuf));
-    snprintf(cap, sizeof(cap), "Up to %s", capBuf);
-    canvasDrawString(textX, y + 56, cap, true, kBody);
-    canvasDrawString(textX, y + 80, "Tap to install a .bin", true, kSmall);
-    const int by = y + h - kBtnH - 14;
-    drawFilledBtn(x + w - kBtnW - 14, by, kBtnW, kBtnH, "Install");
+    snprintf(cap, sizeof(cap), "Up to %s. Tap to install.", capBuf);
+    fitText(cap, textW, kSmall);
+    canvasDrawString(textX, ty + canvasTextHeight(kBody) + 4, cap, true, kSmall);
+    drawIcon(kIconPlus24, x + w - kCardMoreW / 2 - 4, y + h / 2);
+    return;
   }
+
+  const bool update = !slot.updatePath.empty();
+  constexpr int kBarH = 6;
+  const int blockH = titleH + 6 + capH + 8 + kBarH + (update ? 10 + capH : 0);
+  int ty = y + (h - blockH) / 2;
+
+  char title[48];
+  snprintf(title, sizeof(title), "%s", slot.title.empty() ? slot.name.c_str() : slot.title.c_str());
+  fitText(title, textW, kTitle);
+  canvasDrawString(textX, ty, title, true, kTitle);
+  ty += titleH + 6;
+
+  char used[24], cap[24], line[64];
+  const size_t usedBytes = slot.size ? slot.size : slot.capacity;
+  appsFormatBytes(usedBytes, used, sizeof(used));
+  appsFormatBytes(slot.capacity, cap, sizeof(cap));
+  if (!slot.version.empty()) snprintf(line, sizeof(line), "%s  |  %s of %s", slot.version.c_str(), used, cap);
+  else snprintf(line, sizeof(line), "%s of %s", used, cap);
+  fitText(line, textW, kSmall);
+  canvasDrawString(textX, ty, line, true, kSmall);
+  ty += capH + 8;
+
+  canvasDrawRoundRect(textX, ty, textW, kBarH, 3, true);
+  if (slot.capacity > 0) {
+    int fill = static_cast<int>((static_cast<uint64_t>(textW) * usedBytes) / slot.capacity);
+    fill = std::max(4, std::min(textW, fill));
+    canvasFillRoundRect(textX, ty, fill, kBarH, 3, true);
+  }
+  ty += kBarH + 10;
+
+  if (update) {
+    drawIcon(kIconUpdate20, textX + 10, ty + capH / 2);
+    char upd[48];
+    snprintf(upd, sizeof(upd), "Update to %s", slot.updateVersion.c_str());
+    fitText(upd, textW - 28, kSmall);
+    canvasDrawString(textX + 28, ty, upd, true, kSmall, true);
+  }
+  drawIcon(kIconMore24, x + w - kCardMoreW / 2 - 4, y + h / 2);
+}
+
+void drawResumeCard(const HomeLayout& g, const SlotInfo& slot) {
+  const int x = kPad;
+  const int y = g.resumeY;
+  const int w = kScreenW - 2 * kPad;
+  canvasDrawRoundRect(x, y, w, kResumeH, kRadius, true);
+  canvasDrawRoundRect(x + 1, y + 1, w - 2, kResumeH - 2, kRadius - 1, true);
+  constexpr int kPlay = 64;
+  const int px = x + 20;
+  const int py = y + (kResumeH - kPlay) / 2;
+  canvasFillRoundRect(px, py, kPlay, kPlay, 16, true);
+  drawIcon(kIconPlay28, px + kPlay / 2 + 2, py + kPlay / 2, false);
+
+  const int textX = px + kPlay + 18;
+  const int textW = x + w - 18 - textX;
+  const int capH = canvasTextHeight(kSmall);
+  const int blockH = capH + 2 + canvasTextHeight(kTitle) + 2 + capH;
+  int ty = y + (kResumeH - blockH) / 2;
+  canvasDrawString(textX, ty, "Continue", true, kSmall);
+  ty += capH + 2;
+  char title[48];
+  snprintf(title, sizeof(title), "%s", slot.title.empty() ? slot.name.c_str() : slot.title.c_str());
+  fitText(title, textW, kTitle);
+  canvasDrawString(textX, ty, title, true, kTitle);
+  ty += canvasTextHeight(kTitle) + 2;
+  char sub[48];
+  if (!slot.version.empty()) snprintf(sub, sizeof(sub), "Slot %c  |  %s", slot.label[0], slot.version.c_str());
+  else snprintf(sub, sizeof(sub), "Slot %c", slot.label[0]);
+  canvasDrawString(textX, ty, sub, true, kSmall);
 }
 
 void presentNavigation() { canvasPresentFor(CanvasRefreshIntent::Navigation); }
 void presentQuality() { canvasPresentFor(CanvasRefreshIntent::StaticQuality); }
 
-void drawWrappedBody(const char* body, int startY) {
-  if (!body) return;
-  char buf[128];
-  strncpy(buf, body, sizeof(buf) - 1);
-  buf[sizeof(buf) - 1] = 0;
-  int y = startY;
-  const char* p = buf;
-  for (int line = 0; line < 5 && *p; ++line) {
-    char row[34];
-    size_t n = 0;
-    while (p[n] && n < 32) ++n;
-    memcpy(row, p, n);
-    row[n] = 0;
-    canvasDrawString(kPad, y, row, true, kBody);
-    p += n;
-    y += 22;
+// Word-wrap text into a column, breaking long words when they must. Returns
+// the y below the last line drawn.
+int drawWrapped(const char* text, int x, int y, int w, int scale, int maxLines, bool bold = false) {
+  if (!text) return y;
+  const int cellW = std::max(1, canvasTextWidth("M", scale));
+  const int perLine = std::max(4, w / cellW);
+  const int lineH = canvasTextHeight(scale) + 4;
+  const char* p = text;
+  for (int line = 0; line < maxLines && *p; ++line) {
+    while (*p == ' ') ++p;
+    int n = 0;
+    int lastSpace = -1;
+    while (p[n] && p[n] != '\n' && n < perLine) {
+      if (p[n] == ' ') lastSpace = n;
+      ++n;
+    }
+    int take = n;
+    if (p[n] && p[n] != '\n' && p[n] != ' ' && lastSpace > 0) take = lastSpace;
+    char row[96];
+    const int len = std::min(take, static_cast<int>(sizeof(row)) - 1);
+    memcpy(row, p, len);
+    row[len] = 0;
+    if (line == maxLines - 1 && p[take] && p[take] != '\n') fitText(row, w, scale);
+    canvasDrawString(x, y, row, true, scale, bold);
+    y += lineH;
+    p += take;
+    if (*p == '\n') ++p;
   }
+  return y;
 }
 
 }  // namespace
@@ -585,38 +625,40 @@ void uiDrawSplash() {
   canvasPresent(EInkDisplay::FULL_REFRESH);
 }
 
-void homeChipRect(int index, int& x, int& y, int& w, int& h) {
-  constexpr int chipW = 148;
-  x = kPad + index * (chipW + 12);
-  y = kScreenH - kHomeFooterH;
-  w = chipW;
-  h = kHomeFooterH;
+void homeFooterRect(int index, int& x, int& y, int& w, int& h) {
+  constexpr int kGap = 12;
+  w = (kScreenW - 2 * kPad - 2 * kGap) / 3;
+  h = kHomeFooterH - 24;
+  x = kPad + index * (w + kGap);
+  y = kScreenH - kHomeFooterH + 12;
 }
 
-void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space, bool stable) {
+void uiDrawHome(const SlotInfo slots[kSlotCount], const FlashSpace& space, bool stable, int lastSlot) {
   canvasClear();
   drawStatusBar(space, true);
+  const bool resume = lastSlot >= 0 && lastSlot < kSlotCount && slots[lastSlot].occupied;
+  gHomeResumeSlot = resume ? lastSlot : -1;
+  const HomeLayout g = homeLayout(resume);
 
-  const int appsY = statusBarH() + 18;
-  canvasDrawString(kPad, appsY, "Apps", true, kTitle);
+  if (resume) drawResumeCard(g, slots[lastSlot]);
 
-  for (int i = 0; i < kSlotCount; ++i) drawSlotCard(i, slots[i]);
-
-  canvasDrawLine(0, kScreenH - kHomeFooterH, kScreenW - 1, kScreenH - kHomeFooterH, true);
-
-  int fx, fy, fw, fh;
-  homeChipRect(0, fx, fy, fw, fh);
-  // Inset the drawn chip slightly so it doesn't collide with the footer rule.
-  drawChromeOutlineBtn(fx, fy + 8, fw, fh - 16, "Files");
-  int wx, wy, ww, wh;
-  homeChipRect(1, wx, wy, ww, wh);
-  drawChromeOutlineBtn(wx, wy + 8, ww, wh - 16, "Web");
-
+  canvasDrawString(kPad, g.labelY, "Apps", true, kBody, true);
   char freeBuf[24], freeLine[40];
   appsFormatBytes(space.guestFree, freeBuf, sizeof(freeBuf));
-  snprintf(freeLine, sizeof(freeLine), "free %s", freeBuf);
-  const int freeY = fy + (fh - canvasTextHeight(kSmall)) / 2;
-  canvasDrawString(kScreenW - kPad - canvasTextWidth(freeLine, kSmall), freeY, freeLine, true, kSmall);
+  snprintf(freeLine, sizeof(freeLine), "%s free", freeBuf);
+  canvasDrawString(kScreenW - kPad - canvasTextWidth(freeLine, kSmall),
+                   g.labelY + (canvasTextHeight(kBody) - canvasTextHeight(kSmall)) / 2, freeLine, true, kSmall);
+
+  for (int i = 0; i < kSlotCount; ++i) drawSlotCard(g, i, slots[i]);
+
+  canvasDrawLine(0, g.footerY, kScreenW - 1, g.footerY, true);
+  const UiIcon* icons[3] = {&kIconFolder24, &kIconGlobe24, &kIconSettings24};
+  const char* labels[3] = {"Files", "Web", "Settings"};
+  for (int i = 0; i < 3; ++i) {
+    int fx, fy, fw, fh;
+    homeFooterRect(i, fx, fy, fw, fh);
+    drawToolBtn(fx, fy, fw, fh, *icons[i], labels[i]);
+  }
   // Boot arrives from a full splash refresh; a FAST home leaves the charging
   // bolt ghosted under the battery until the settle scrub. Paint clean once.
   if (stable) presentQuality();
@@ -633,317 +675,161 @@ void uiRedrawStatusBar(const FlashSpace& space, bool showClosedGrabber) {
 }
 
 void uiRedrawHomeStatus(const FlashSpace& space) { uiRedrawStatusBar(space, true); }
-
 constexpr int kExplorerRowH = 72;
+constexpr int kCrumbH = 52;
 
 int uiExplorerRowHeight() { return kExplorerRowH; }
 
-int explorerListTop() { return statusBarH() + 116; }
-int explorerListBottom() { return kScreenH - kExplorerDockH - 8; }
+int explorerListTop() { return contentTop() + kCrumbH + 4; }
+int explorerListBottom() { return kScreenH - kExplorerDockH - 4; }
 
 int uiExplorerVisibleRows() {
   return std::max(1, (explorerListBottom() - explorerListTop()) / kExplorerRowH);
 }
 
-enum class EntryIcon { Folder, Bin, Image, Text, File };
+namespace {
 
-EntryIcon entryIconKind(const DirEntry& e) {
-  if (e.isDir) return EntryIcon::Folder;
-  if (fileOpsIsBin(e.name.c_str())) return EntryIcon::Bin;
-  if (fileOpsIsImage(e.name.c_str())) return EntryIcon::Image;
-  if (fileOpsIsText(e.name.c_str())) return EntryIcon::Text;
-  return EntryIcon::File;
+const UiIcon& entryIcon(const DirEntry& e) {
+  if (e.isDir) return kIconFolder28;
+  if (fileOpsIsBin(e.name.c_str())) return kIconChip28;
+  if (fileOpsIsImage(e.name.c_str())) return kIconImage28;
+  if (fileOpsIsText(e.name.c_str())) return kIconFileText28;
+  return kIconFile28;
 }
 
-void drawIconFolder(int cx, int cy, bool ink) {
-  canvasFillRect(cx - 12, cy - 4, 14, 4, ink);
-  canvasDrawRoundRect(cx - 14, cy - 2, 28, 16, 3, ink);
-  canvasDrawLine(cx - 14, cy + 2, cx + 14, cy + 2, ink);
-}
-
-void drawIconFile(int cx, int cy, bool ink) {
-  canvasDrawRoundRect(cx - 10, cy - 12, 20, 26, 2, ink);
-  canvasDrawLine(cx + 2, cy - 12, cx + 10, cy - 4, ink);
-  canvasDrawLine(cx + 2, cy - 12, cx + 2, cy - 4, ink);
-  canvasDrawLine(cx + 2, cy - 4, cx + 10, cy - 4, ink);
-}
-
-void drawIconImage(int cx, int cy, bool ink) {
-  canvasDrawRoundRect(cx - 14, cy - 10, 28, 22, 3, ink);
-  canvasFillRect(cx - 6, cy - 4, 5, 5, ink);
-  canvasDrawLine(cx - 12, cy + 8, cx - 2, cy - 0, ink);
-  canvasDrawLine(cx - 2, cy - 0, cx + 4, cy + 5, ink);
-  canvasDrawLine(cx + 4, cy + 5, cx + 12, cy - 2, ink);
-}
-
-void drawIconText(int cx, int cy, bool ink) {
-  canvasDrawRoundRect(cx - 10, cy - 12, 20, 26, 2, ink);
-  canvasDrawLine(cx - 5, cy - 5, cx + 5, cy - 5, ink);
-  canvasDrawLine(cx - 5, cy + 1, cx + 5, cy + 1, ink);
-  canvasDrawLine(cx - 5, cy + 7, cx + 2, cy + 7, ink);
-}
-
-void drawIconBin(int cx, int cy, bool ink) {
-  canvasDrawRoundRect(cx - 14, cy - 8, 28, 18, 4, ink);
-  canvasDrawString(cx - 10, cy - 6, "BIN", ink, kSmall);
-}
-
-void drawEntryIcon(EntryIcon kind, int cx, int cy, bool ink) {
-  switch (kind) {
-    case EntryIcon::Folder:
-      drawIconFolder(cx, cy, ink);
-      break;
-    case EntryIcon::Image:
-      drawIconImage(cx, cy, ink);
-      break;
-    case EntryIcon::Text:
-      drawIconText(cx, cy, ink);
-      break;
-    case EntryIcon::Bin:
-      drawIconBin(cx, cy, ink);
-      break;
-    default:
-      drawIconFile(cx, cy, ink);
-      break;
-  }
-}
-
-void drawIconClose(int cx, int cy, bool ink) {
-  // Thick X
-  for (int d = -1; d <= 1; ++d) {
-    canvasDrawLine(cx - 11 + d, cy - 11, cx + 11 + d, cy + 11, ink);
-    canvasDrawLine(cx + 11 + d, cy - 11, cx - 11 + d, cy + 11, ink);
-  }
-}
-
-void drawWifiArc(int cx, int cy, int r, bool ink) {
-  auto point = [&](int deg, int& x, int& y) {
-    const float rad = static_cast<float>(deg) * 0.0174532925f;
-    x = cx + static_cast<int>(lroundf(cosf(rad) * static_cast<float>(r)));
-    y = cy + static_cast<int>(lroundf(sinf(rad) * static_cast<float>(r)));
-  };
-  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-  point(205, x0, y0);
-  for (int deg = 220; deg <= 340; deg += 15) {
-    point(deg, x1, y1);
-    canvasDrawLine(x0, y0, x1, y1, ink);
-    canvasDrawLine(x0, y0 + 1, x1, y1 + 1, ink);
-    x0 = x1;
-    y0 = y1;
-  }
-}
-
-void drawCirclePoly(int cx, int cy, int r, bool ink) {
-  auto point = [&](int deg, int& x, int& y) {
-    const float rad = static_cast<float>(deg) * 0.0174532925f;
-    x = cx + static_cast<int>(lroundf(cosf(rad) * static_cast<float>(r)));
-    y = cy + static_cast<int>(lroundf(sinf(rad) * static_cast<float>(r)));
-  };
-  int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-  point(0, x0, y0);
-  for (int deg = 24; deg <= 360; deg += 24) {
-    point(deg, x1, y1);
-    canvasDrawLine(x0, y0, x1, y1, ink);
-    x0 = x1;
-    y0 = y1;
-  }
-}
-
-void drawIconGear(int cx, int cy, bool ink) {
-  drawCirclePoly(cx, cy, 11, ink);
-  drawCirclePoly(cx, cy, 9, ink);
-  drawCirclePoly(cx, cy, 4, ink);
-  for (int deg = 0; deg < 360; deg += 45) {
-    const float rad = static_cast<float>(deg) * 0.0174532925f;
-    const int x0 = cx + static_cast<int>(lroundf(cosf(rad) * 10.f));
-    const int y0 = cy + static_cast<int>(lroundf(sinf(rad) * 10.f));
-    const int x1 = cx + static_cast<int>(lroundf(cosf(rad) * 18.f));
-    const int y1 = cy + static_cast<int>(lroundf(sinf(rad) * 18.f));
-    canvasDrawLine(x0, y0, x1, y1, ink);
-    canvasDrawLine(x0 + 1, y0, x1 + 1, y1, ink);
-  }
-}
-
-void drawIconGps(int cx, int cy, bool ink) {
-  drawCirclePoly(cx, cy, 16, ink);
-  canvasDrawLine(cx - 10, cy, cx + 10, cy, ink);
-  canvasDrawLine(cx, cy - 10, cx, cy + 10, ink);
-  canvasFillRect(cx - 2, cy - 2, 5, 5, ink);
-}
-
-void drawIconTransfer(int cx, int cy, bool ink) {
-  canvasDrawRect(cx - 16, cy - 2, 32, 18, ink);
-  canvasDrawLine(cx, cy - 16, cx, cy + 2, ink);
-  canvasDrawLine(cx - 7, cy - 9, cx, cy - 16, ink);
-  canvasDrawLine(cx + 7, cy - 9, cx, cy - 16, ink);
-}
-
-void drawIconWifi(int cx, int cy, bool ink) {
-  canvasFillRect(cx - 2, cy + 8, 5, 5, ink);
-  drawWifiArc(cx, cy + 10, 8, ink);
-  drawWifiArc(cx, cy + 10, 14, ink);
-  drawWifiArc(cx, cy + 10, 20, ink);
-}
-
-void drawQsTile(int x, int y, int icon, int tileW, bool filled, void (*iconFn)(int, int, bool),
-                const char* label) {
+void drawQsTile(int x, int y, int icon, int tileW, bool filled, const UiIcon& glyph, const char* label) {
   const int iconX = x + (tileW - icon) / 2;
   if (filled) canvasFillRoundRect(iconX, y, icon, icon, kQsIconRadius, true);
   else {
     canvasFillRoundRect(iconX, y, icon, icon, kQsIconRadius, false);
     canvasDrawRoundRect(iconX, y, icon, icon, kQsIconRadius, true);
   }
-  iconFn(iconX + icon / 2, y + icon / 2, !filled);
-  const int lw = canvasTextWidth(label, kBody);
-  canvasDrawString(x + (tileW - lw) / 2, y + icon + 4, label, true, kBody, true);
+  drawIcon(glyph, iconX + icon / 2, y + icon / 2, !filled);
+  const int lw = canvasTextWidth(label, kSmall);
+  canvasDrawString(x + (tileW - lw) / 2, y + icon + 6, label, true, kSmall, true);
 }
 
-void drawIconBack(int cx, int cy, bool ink) {
-  canvasDrawLine(cx + 6, cy - 10, cx - 8, cy, ink);
-  canvasDrawLine(cx - 8, cy, cx + 6, cy + 10, ink);
-  canvasDrawLine(cx - 8, cy, cx + 10, cy, ink);
-}
-
-void drawIconUp(int cx, int cy, bool ink) {
-  canvasDrawLine(cx, cy - 10, cx - 10, cy + 2, ink);
-  canvasDrawLine(cx, cy - 10, cx + 10, cy + 2, ink);
-  canvasDrawLine(cx, cy - 10, cx, cy + 12, ink);
-}
-
-void drawIconMenu(int cx, int cy, bool ink) {
-  canvasFillRoundRect(cx - 3, cy - 12, 6, 6, 2, ink);
-  canvasFillRoundRect(cx - 3, cy - 3, 6, 6, 2, ink);
-  canvasFillRoundRect(cx - 3, cy + 6, 6, 6, 2, ink);
-}
-
-void drawIconPaste(int cx, int cy, bool ink) {
-  canvasDrawRoundRect(cx - 10, cy - 6, 20, 18, 2, ink);
-  canvasDrawRect(cx - 6, cy - 12, 12, 8, ink);
-  canvasDrawLine(cx - 4, cy + 0, cx + 4, cy + 0, ink);
-  canvasDrawLine(cx - 4, cy + 5, cx + 4, cy + 5, ink);
-}
-
-void drawIconBtn(int x, int y, int w, int h, void (*icon)(int, int, bool), bool filled) {
-  if (filled) canvasFillRoundRect(x, y, w, h, kIconRadius, true);
-  else {
-    canvasFillRoundRect(x, y, w, h, kIconRadius, false);
-    canvasDrawRoundRect(x, y, w, h, kIconRadius, true);
-  }
-  icon(x + w / 2, y + h / 2, !filled);
-}
-
-bool hitIconBtn(int x, int y, int bx, int by, int w, int h) {
+bool hitRect(int x, int y, int bx, int by, int w, int h) {
   return x >= bx && x < bx + w && y >= by && y < by + h;
 }
 
-struct SheetItem {
-  const char* label;
+// --- Breadcrumbs: "SD > books > scifi". Every crumb but the last is a tap
+// target that jumps to that folder; an Up button leads when not at the root.
+constexpr int kMaxCrumbs = 10;
+struct CrumbHit {
+  int x = 0;
+  int w = 0;
+  int depth = 0;
+};
+CrumbHit gCrumbs[kMaxCrumbs];
+int gCrumbCount = 0;
+constexpr int kCrumbUpW = 52;
+
+void drawCrumbs(const char* path) {
+  const int top = contentTop();
+  const int midY = top + kCrumbH / 2;
+  const bool atRoot = !path || appsIsRootDir(path);
+  canvasFillRect(0, top, kScreenW, kCrumbH, false);
+  int x = kPad;
+  if (!atRoot) {
+    canvasDrawRoundRect(kPad, midY - 20, kCrumbUpW - 8, 40, kIconRadius, true);
+    drawIcon(kIconUp24, kPad + (kCrumbUpW - 8) / 2, midY);
+    x += kCrumbUpW + 4;
+  }
+
+  // Names along the path, root first.
+  char labels[kMaxCrumbs][40];
+  int depths[kMaxCrumbs];
+  int n = 0;
+  snprintf(labels[n], sizeof(labels[n]), "SD");
+  depths[n++] = 0;
+  if (!atRoot) {
+    const char* p = path;
+    int depth = 0;
+    while (*p) {
+      while (*p == '/') ++p;
+      if (!*p) break;
+      const char* e = strchr(p, '/');
+      const size_t len = e ? static_cast<size_t>(e - p) : strlen(p);
+      ++depth;
+      if (n < kMaxCrumbs) {
+        snprintf(labels[n], sizeof(labels[n]), "%.*s", static_cast<int>(std::min<size_t>(len, 39)), p);
+        depths[n++] = depth;
+      } else {
+        // Deeper than we track: keep the last slot pointing at the current folder.
+        snprintf(labels[n - 1], sizeof(labels[n - 1]), "%.*s", static_cast<int>(std::min<size_t>(len, 39)), p);
+        depths[n - 1] = depth;
+      }
+      p += len;
+    }
+  }
+
+  // Keep "SD", then as many trailing crumbs as fit, with "..." between.
+  constexpr int kSep = 22;
+  const int avail = kScreenW - kPad - x;
+  int first = 1;
+  auto widthFrom = [&](int from) {
+    int w = canvasTextWidth(labels[0], kBody);
+    if (from > 1) w += kSep + canvasTextWidth("...", kBody);
+    for (int i = from; i < n; ++i) w += kSep + canvasTextWidth(labels[i], kBody);
+    return w;
+  };
+  while (first < n - 1 && widthFrom(first) > avail) ++first;
+  if (n > 1) fitText(labels[n - 1], avail - (widthFrom(first) - canvasTextWidth(labels[n - 1], kBody)), kBody);
+
+  gCrumbCount = 0;
+  const int textY = midY - canvasTextHeight(kBody) / 2;
+  auto put = [&](const char* label, int depth, bool current, bool tappable) {
+    const int w = canvasTextWidth(label, kBody);
+    canvasDrawString(x, textY, label, true, kBody, current);
+    if (tappable && gCrumbCount < kMaxCrumbs) gCrumbs[gCrumbCount++] = {x - 6, w + 12, depth};
+    x += w;
+  };
+  put(labels[0], 0, n == 1, n > 1);
+  if (first > 1) {
+    drawIcon(kIconChevron24, x + kSep / 2, midY);
+    x += kSep;
+    put("...", depths[first - 1], false, true);
+  }
+  for (int i = first; i < n; ++i) {
+    drawIcon(kIconChevron24, x + kSep / 2, midY);
+    x += kSep;
+    put(labels[i], depths[i], i == n - 1, i < n - 1);
+  }
+}
+
+// --- Bottom dock. Browsing: New folder, Paste (with something copied),
+// Select, More. Selecting: the count, Open (one item), Delete, More, Done.
+struct DockCell {
   UiHit::Kind kind;
-  void (*icon)(int, int, bool);
+  const UiIcon* icon;
+  const char* label;
+  bool filled;
 };
 
-// Larger glyphs for the action-sheet grid (~1.7x).
-void drawIconCopyLg(int cx, int cy, bool ink) {
-  canvasDrawRoundRect(cx - 4, cy - 16, 22, 28, 3, ink);
-  canvasDrawRoundRect(cx - 18, cy - 6, 22, 28, 3, ink);
-}
-
-void drawIconCutLg(int cx, int cy, bool ink) {
-  for (int d = -1; d <= 1; ++d) {
-    canvasDrawLine(cx - 14 + d, cy - 14, cx + 14 + d, cy + 14, ink);
-    canvasDrawLine(cx + 14 + d, cy - 14, cx - 14 + d, cy + 14, ink);
+int explorerDockCells(bool selecting, int count, bool clipboardHas, DockCell out[5]) {
+  int n = 0;
+  if (selecting) {
+    out[n++] = {UiHit::Kind::None, nullptr, nullptr, false};  // the "N selected" label
+    if (count == 1) out[n++] = {UiHit::Kind::ExplorerOpen, &kIconChevron24, "Open", true};
+    out[n++] = {UiHit::Kind::ExplorerDelete, &kIconTrash24, "Delete", false};
+    out[n++] = {UiHit::Kind::ExplorerMore, &kIconMore24, "More", false};
+    out[n++] = {UiHit::Kind::Back, &kIconCheck24, "Done", false};
+    return n;
   }
-  canvasDrawLine(cx - 14, cy - 14, cx - 4, cy - 4, ink);
-  canvasDrawLine(cx + 14, cy - 14, cx + 4, cy - 4, ink);
+  out[n++] = {UiHit::Kind::ExplorerNew, &kIconFolderPlus24, "Folder", false};
+  if (clipboardHas) out[n++] = {UiHit::Kind::ExplorerPaste, &kIconPaste24, "Paste", false};
+  out[n++] = {UiHit::Kind::ExplorerSelectMode, &kIconSelect24, "Select", false};
+  out[n++] = {UiHit::Kind::ExplorerMore, &kIconMore24, "More", false};
+  return n;
 }
 
-void drawIconPasteLg(int cx, int cy, bool ink) {
-  canvasDrawRoundRect(cx - 14, cy - 6, 28, 26, 3, ink);
-  canvasDrawRect(cx - 8, cy - 16, 16, 12, ink);
-  canvasDrawLine(cx - 6, cy + 2, cx + 6, cy + 2, ink);
-  canvasDrawLine(cx - 6, cy + 9, cx + 6, cy + 9, ink);
-}
-
-void drawIconRenameLg(int cx, int cy, bool ink) {
-  canvasDrawLine(cx - 14, cy + 14, cx + 8, cy - 12, ink);
-  canvasDrawLine(cx + 8, cy - 12, cx + 14, cy - 6, ink);
-  canvasDrawLine(cx - 14, cy + 14, cx - 6, cy + 14, ink);
-  canvasFillRect(cx + 6, cy - 14, 8, 8, ink);
-}
-
-void drawIconDeleteLg(int cx, int cy, bool ink) {
-  canvasDrawLine(cx - 12, cy - 12, cx + 12, cy - 12, ink);
-  canvasDrawRect(cx - 14, cy - 6, 28, 26, ink);
-  canvasDrawLine(cx - 4, cy + 0, cx - 4, cy + 14, ink);
-  canvasDrawLine(cx + 4, cy + 0, cx + 4, cy + 14, ink);
-  canvasFillRect(cx - 6, cy - 18, 12, 6, ink);
-}
-
-void drawIconNewLg(int cx, int cy, bool ink) {
-  canvasFillRect(cx - 16, cy - 4, 18, 5, ink);
-  canvasDrawRoundRect(cx - 18, cy - 1, 36, 22, 4, ink);
-  canvasDrawLine(cx + 10, cy - 14, cx + 10, cy + 4, ink);
-  canvasDrawLine(cx + 2, cy - 6, cx + 18, cy - 6, ink);
-}
-
-void drawIconCopy(int cx, int cy, bool ink) {
-  canvasDrawRoundRect(cx - 4, cy - 10, 16, 20, 2, ink);
-  canvasDrawRoundRect(cx - 12, cy - 4, 16, 20, 2, ink);
-}
-
-void drawIconCut(int cx, int cy, bool ink) {
-  canvasDrawLine(cx - 10, cy - 10, cx + 10, cy + 10, ink);
-  canvasDrawLine(cx + 10, cy - 10, cx - 10, cy + 10, ink);
-  canvasDrawLine(cx - 10, cy - 10, cx - 4, cy - 4, ink);
-  canvasDrawLine(cx + 10, cy - 10, cx + 4, cy - 4, ink);
-}
-
-void drawIconRename(int cx, int cy, bool ink) {
-  canvasDrawLine(cx - 10, cy + 10, cx + 6, cy - 8, ink);
-  canvasDrawLine(cx + 6, cy - 8, cx + 10, cy - 4, ink);
-  canvasDrawLine(cx - 10, cy + 10, cx - 6, cy + 10, ink);
-}
-
-void drawIconDelete(int cx, int cy, bool ink) {
-  canvasDrawLine(cx - 8, cy - 8, cx + 8, cy - 8, ink);
-  canvasDrawRect(cx - 10, cy - 4, 20, 18, ink);
-  canvasDrawLine(cx - 3, cy + 0, cx - 3, cy + 10, ink);
-  canvasDrawLine(cx + 3, cy + 0, cx + 3, cy + 10, ink);
-  canvasFillRect(cx - 4, cy - 12, 8, 4, ink);
-}
-
-void drawIconNewFileLg(int cx, int cy, bool ink) {
-  canvasDrawRoundRect(cx - 14, cy - 18, 28, 36, 3, ink);
-  canvasDrawLine(cx + 2, cy - 18, cx + 14, cy - 6, ink);
-  canvasDrawLine(cx + 2, cy - 18, cx + 2, cy - 6, ink);
-  canvasDrawLine(cx + 2, cy - 6, cx + 14, cy - 6, ink);
-  canvasDrawLine(cx + 10, cy - 4, cx + 10, cy + 12, ink);
-  canvasDrawLine(cx + 2, cy + 4, cx + 18, cy + 4, ink);
-}
-
-// Shared action-sheet geometry (3 cols x 3 rows; 7 actions used).
-constexpr int kSheetCols = 3;
-constexpr int kSheetCount = 7;
-constexpr int kSheetCellH = 100;
-constexpr int kSheetPad = 14;
-constexpr int kSheetGrab = 22;
-constexpr int kSheetGap = 10;
-
-int explorerSheetH() {
-  return kSheetGrab + 10 + 3 * kSheetCellH + 2 * kSheetGap + kSheetPad;
-}
-
-void explorerSheetCell(int index, int& x, int& y, int& w, int& h) {
-  const int sheetH = explorerSheetH();
-  const int sheetY = kScreenH - sheetH;
-  const int gridTop = sheetY + kSheetGrab + 8;
-  const int usable = kScreenW - 2 * kPad;
-  w = (usable - (kSheetCols - 1) * kSheetGap) / kSheetCols;
-  h = kSheetCellH;
-  const int col = index % kSheetCols;
-  const int row = index / kSheetCols;
-  x = kPad + col * (w + kSheetGap);
-  y = gridTop + row * (h + kSheetGap);
+void dockCellRect(int index, int count, int& x, int& y, int& w, int& h) {
+  const int dockY = kScreenH - kExplorerDockH;
+  w = (kScreenW - 2 * kPad) / count;
+  h = kExplorerDockH - 16;
+  x = kPad + index * w;
+  y = dockY + 8;
 }
 
 int explorerSelectionCount(const ExplorerDrawState& st) {
@@ -961,81 +847,89 @@ void drawExplorerDock(const ExplorerDrawState& st) {
   const int dockY = kScreenH - kExplorerDockH;
   canvasFillRect(0, dockY, kScreenW, kExplorerDockH, false);
   canvasDrawLine(0, dockY, kScreenW - 1, dockY, true);
-
-  const int btnH = 48;
-  const int btnY = dockY + (kExplorerDockH - btnH) / 2;
-  int textX = kPad;
-  if (st.clipboardHas) {
-    drawIconBtn(kPad, btnY, 64, btnH, drawIconPaste, true);
-    textX += 74;
-  }
-
   const int count = explorerSelectionCount(st);
-  if (count > 0) {
-    char selected[28];
-    if (count == 1) snprintf(selected, sizeof(selected), "1 selected");
-    else snprintf(selected, sizeof(selected), "%d selected", count);
-    canvasDrawString(textX, btnY + (btnH - canvasTextHeight(kSmall)) / 2, selected, true, kSmall);
-  } else if (st.multiSelect) {
-    canvasDrawString(textX, btnY + (btnH - canvasTextHeight(kSmall)) / 2, "Select items", true, kSmall);
+  const bool selecting = st.multiSelect || count > 0;
+  DockCell cells[5];
+  const int n = explorerDockCells(selecting, count, st.clipboardHas, cells);
+  for (int i = 0; i < n; ++i) {
+    int x, y, w, h;
+    dockCellRect(i, n, x, y, w, h);
+    if (!cells[i].icon) {
+      char label[24];
+      snprintf(label, sizeof(label), "%d selected", count);
+      if (count == 0) snprintf(label, sizeof(label), "Tap items");
+      canvasDrawString(x + 4, y + (h - canvasTextHeight(kSmall)) / 2, label, true, kSmall, true);
+      continue;
+    }
+    const bool ink = !cells[i].filled;
+    if (cells[i].filled) canvasFillRoundRect(x + 4, y, w - 8, h, kBtnRadius, true);
+    const int capH = canvasTextHeight(kSmall);
+    const int blockH = cells[i].icon->h + 4 + capH;
+    const int top = y + (h - blockH) / 2;
+    drawIcon(*cells[i].icon, x + w / 2, top + cells[i].icon->h / 2, ink);
+    canvasDrawString(x + (w - canvasTextWidth(cells[i].label, kSmall)) / 2, top + cells[i].icon->h + 4,
+                     cells[i].label, ink, kSmall);
   }
-
-  const int menuX = kScreenW - kPad - 64;
-  if (count == 1 && !st.sheetOpen) {
-    constexpr int openW = 112;
-    drawFilledBtn(menuX - 12 - openW, btnY, openW, btnH, "Open");
-  }
-  drawIconBtn(menuX, btnY, 64, btnH, drawIconMenu, st.sheetOpen);
 }
 
 void drawExplorerViewport(const std::vector<DirEntry>& entries, const ExplorerDrawState& st) {
   const int listTop = explorerListTop();
   const int listBottom = explorerListBottom();
   const int visible = uiExplorerVisibleRows();
-  const int cardW = kScreenW - 2 * kPad;
   const int start = st.scroll;
   const int end = std::min(static_cast<int>(entries.size()), start + visible);
-  constexpr int kIconCol = 44;
+  constexpr int kIconCol = 48;
+  const int textX = kPad + kIconCol;
+  const int right = kScreenW - kPad;
 
   canvasFillRect(0, listTop, kScreenW, listBottom - listTop, false);
   if (entries.empty()) {
-    canvasDrawString(kPad, listTop + 24, boardSdOk() ? "Empty folder" : "Insert SD card", true, kBody);
+    const char* msg = boardSdOk() ? "This folder is empty" : "Insert an SD card";
+    const int cy = listTop + 120;
+    drawIcon(kIconFolder28, kScreenW / 2, cy);
+    canvasDrawString((kScreenW - canvasTextWidth(msg, kBody)) / 2, cy + 30, msg, true, kBody);
   } else {
+    const int bodyH = canvasTextHeight(kBody);
+    const int capH = canvasTextHeight(kSmall);
     for (int i = start; i < end; ++i) {
       const DirEntry& e = entries[i];
       const int rowY = listTop + (i - start) * kExplorerRowH;
+      const int midY = rowY + kExplorerRowH / 2;
       const bool sel = explorerEntrySelected(st, i);
-      // Selection is a heavier outline and a bold name, not a filled row: a
-      // full-width black bar flipping back to white is the transition the fast
-      // waveform ghosts worst.
-      const int rows = sel ? 3 : 1;
-      for (int t = 0; t < rows; ++t) {
-        canvasDrawRoundRect(kPad + t, rowY + t, cardW - 2 * t, kExplorerRowH - 8 - 2 * t, kIconRadius - t, true);
+      // A lone selection gets a light outline; multi-select shows checkboxes.
+      // Neither fills the row: a black bar flipping back to white is what the
+      // fast waveform ghosts worst.
+      if (sel && !st.multiSelect) {
+        canvasDrawRoundRect(kPad - 6, rowY + 4, right - kPad + 12, kExplorerRowH - 8, kIconRadius, true);
+        canvasDrawRoundRect(kPad - 5, rowY + 5, right - kPad + 10, kExplorerRowH - 10, kIconRadius - 1, true);
       }
+      drawIcon(entryIcon(e), kPad + 16, midY);
 
-      const bool ink = true;
-      drawEntryIcon(entryIconKind(e), kPad + 26, rowY + (kExplorerRowH - 8) / 2, ink);
-
-      const int textX = kPad + kIconCol + 8;
-      const int nameMaxW = cardW - kIconCol - 24 - (e.isDir ? 0 : 72);
-      const int charsPerLine = std::max(6, nameMaxW / canvasBodyCellW());
-      char nameBuf[96];
-      snprintf(nameBuf, sizeof(nameBuf), "%s", e.name.c_str());
-      truncate(nameBuf, static_cast<size_t>(charsPerLine));
-      canvasDrawString(textX, rowY + 14, nameBuf, ink, kBody, sel);
-
-      if (!e.isDir) {
+      int rightX = right;
+      if (st.multiSelect) {
+        drawIcon(sel ? kIconSquareCheck24 : kIconSquare24, right - 12, midY);
+        rightX -= 36;
+      }
+      char meta[28] = "";
+      if (e.isDir) {
+        if (!st.multiSelect) drawIcon(kIconChevron24, right - 12, midY);
+        rightX -= st.multiSelect ? 0 : 32;
+      } else {
         char sz[24];
         appsFormatBytes(e.size, sz, sizeof(sz));
         const bool over =
             st.mode == ExplorerMode::Install && fileOpsIsBin(e.name.c_str()) && e.size > st.maxBytes;
-        char right[28];
-        if (over) snprintf(right, sizeof(right), "!%s", sz);
-        else snprintf(right, sizeof(right), "%s", sz);
-        canvasDrawString(kPad + cardW - 14 - canvasTextWidth(right, kSmall), rowY + 18, right, ink, kSmall);
-      } else {
-        canvasDrawString(kPad + cardW - 28, rowY + 18, ">", ink, kTitle);
+        snprintf(meta, sizeof(meta), over ? "too big" : "%s", sz);
+        const int mw = canvasTextWidth(meta, kSmall);
+        canvasDrawString(rightX - mw, midY - capH / 2, meta, true, kSmall, over);
+        rightX -= mw + 12;
       }
+
+      char nameBuf[96];
+      snprintf(nameBuf, sizeof(nameBuf), "%s", e.name.c_str());
+      fitText(nameBuf, rightX - textX, kBody);
+      canvasDrawString(textX, midY - bodyH / 2, nameBuf, true, kBody, sel);
+      if (i + 1 < end) canvasDrawLine(textX, rowY + kExplorerRowH - 1, right - 1, rowY + kExplorerRowH - 1, true);
     }
   }
 
@@ -1044,75 +938,87 @@ void drawExplorerViewport(const std::vector<DirEntry>& entries, const ExplorerDr
     const int thumbH = std::max(16, trackH * visible / static_cast<int>(entries.size()));
     const int maxScroll = std::max(1, static_cast<int>(entries.size()) - visible);
     const int thumbY = listTop + 10 + (trackH - thumbH) * st.scroll / maxScroll;
-    canvasFillRoundRect(kScreenW - 10, thumbY, 4, thumbH, 2, true);
+    canvasFillRoundRect(kScreenW - 7, thumbY, 4, thumbH, 2, true);
   }
 }
+
+// --- More sheet (3 x 3 grid; 7 actions).
+struct SheetItem {
+  const char* label;
+  UiHit::Kind kind;
+  const UiIcon* icon;
+};
+
+constexpr int kSheetCols = 3;
+constexpr int kSheetCount = 7;
+constexpr int kSheetCellH = 100;
+constexpr int kSheetPad = 14;
+constexpr int kSheetGrab = 22;
+constexpr int kSheetGap = 10;
+
+int explorerSheetH() { return kSheetGrab + 10 + 3 * kSheetCellH + 2 * kSheetGap + kSheetPad; }
+
+void explorerSheetCell(int index, int& x, int& y, int& w, int& h) {
+  const int sheetY = kScreenH - explorerSheetH();
+  const int gridTop = sheetY + kSheetGrab + 8;
+  const int usable = kScreenW - 2 * kPad;
+  w = (usable - (kSheetCols - 1) * kSheetGap) / kSheetCols;
+  h = kSheetCellH;
+  x = kPad + (index % kSheetCols) * (w + kSheetGap);
+  y = gridTop + (index / kSheetCols) * (h + kSheetGap);
+}
+
+const SheetItem kSheetItems[kSheetCount] = {
+    {"Copy", UiHit::Kind::ExplorerCopy, &kIconCopy40},
+    {"Cut", UiHit::Kind::ExplorerCut, &kIconCut40},
+    {"Paste", UiHit::Kind::ExplorerPaste, &kIconPaste40},
+    {"Rename", UiHit::Kind::ExplorerRename, &kIconRename40},
+    {"Delete", UiHit::Kind::ExplorerDelete, &kIconTrash40},
+    {"New folder", UiHit::Kind::ExplorerNew, &kIconFolderPlus40},
+    {"New file", UiHit::Kind::ExplorerNewFile, &kIconFilePlus40},
+};
+
+void explorerTitle(const ExplorerDrawState& st, char* out, size_t len) {
+  if (st.mode == ExplorerMode::Install && st.targetSlot >= 0 && st.targetSlot < kSlotCount) {
+    snprintf(out, len, "Install to %c", 'A' + st.targetSlot);
+  } else if (st.mode == ExplorerMode::Install) {
+    snprintf(out, len, "Install");
+  } else {
+    snprintf(out, len, "Files");
+  }
+}
+
+}  // namespace
 
 void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawState& st,
                     const FlashSpace& space) {
   canvasClear();
   drawStatusBar(space, true);
 
-  char title[48];
+  char title[32];
+  explorerTitle(st, title, sizeof(title));
+  drawHeader(title, true);
+
+  char note[32] = "";
   if (st.mode == ExplorerMode::Install) {
-    if (st.targetSlot >= 0 && st.targetSlot < kSlotCount) {
-      snprintf(title, sizeof(title), "Install -> %c", 'A' + st.targetSlot);
-    } else {
-      snprintf(title, sizeof(title), "Install");
-    }
-  } else {
-    snprintf(title, sizeof(title), "Files");
-  }
-  canvasDrawString(kPad, statusBarH() + 12, title, true, kTitle);
-
-  // Close (X) top-right — leaves the explorer.
-  constexpr int kCloseW = 52;
-  constexpr int kCloseH = 48;
-  const int closeX = kScreenW - kPad - kCloseW;
-  const int closeY = statusBarH() + 8;
-  drawIconBtn(closeX, closeY, kCloseW, kCloseH, drawIconClose, false);
-
-  // Up chip replaces the path bar: icon + truncated current path.
-  const bool atRoot = !st.currentPath || appsIsRootDir(st.currentPath);
-  char pathLine[48];
-  snprintf(pathLine, sizeof(pathLine), "%s", st.currentPath ? st.currentPath : "/");
-  if (strlen(pathLine) > 22) {
-    char shortP[48];
-    snprintf(shortP, sizeof(shortP), "...%s", pathLine + strlen(pathLine) - 20);
-    snprintf(pathLine, sizeof(pathLine), "%s", shortP);
-  }
-  const int upY = statusBarH() + 62;
-  const int upH = 44;
-  const int upW = kScreenW - 2 * kPad - (st.clipboardHas || st.mode == ExplorerMode::Install ? 110 : 0);
-  if (atRoot) {
-    canvasDrawRoundRect(kPad, upY, upW, upH, kIconRadius, true);
-    canvasDrawString(kPad + 14, upY + (upH - canvasTextHeight(kBody)) / 2, pathLine, true, kBody);
-  } else {
-    drawIconBtn(kPad, upY, upH, upH, drawIconUp, false);
-    canvasDrawRoundRect(kPad + upH + 8, upY, upW - upH - 8, upH, kIconRadius, true);
-    canvasDrawString(kPad + upH + 20, upY + (upH - canvasTextHeight(kBody)) / 2, pathLine, true, kBody);
-  }
-
-  if (st.mode == ExplorerMode::Install) {
-    char maxBuf[24], hint[40];
+    char maxBuf[24];
     appsFormatBytes(st.maxBytes, maxBuf, sizeof(maxBuf));
-    snprintf(hint, sizeof(hint), "max %s", maxBuf);
-    canvasDrawString(kScreenW - kPad - canvasTextWidth(hint, kSmall), upY + (upH - canvasTextHeight(kSmall)) / 2,
-                     hint, true, kSmall);
+    snprintf(note, sizeof(note), "max %s", maxBuf);
   } else if (st.clipboardHas) {
-    char clip[24];
     if (st.clipboardCount > 1) {
-      snprintf(clip, sizeof(clip), st.clipboardCut ? "%u cut" : "%u copied",
+      snprintf(note, sizeof(note), st.clipboardCut ? "%u to move" : "%u copied",
                static_cast<unsigned>(st.clipboardCount));
     } else {
-      snprintf(clip, sizeof(clip), "%s", st.clipboardCut ? "cut ready" : "copied");
+      snprintf(note, sizeof(note), "%s", st.clipboardCut ? "1 to move" : "1 copied");
     }
-    canvasDrawString(kScreenW - kPad - canvasTextWidth(clip, kSmall), upY + (upH - canvasTextHeight(kSmall)) / 2,
-                     clip, true, kSmall);
+  }
+  if (note[0]) {
+    canvasDrawString(kScreenW - kPad - canvasTextWidth(note, kSmall),
+                     statusBarH() + (kHeaderH - canvasTextHeight(kSmall)) / 2, note, true, kSmall);
   }
 
+  drawCrumbs(st.currentPath);
   drawExplorerViewport(entries, st);
-
   drawExplorerDock(st);
 
   if (st.sheetOpen) {
@@ -1120,24 +1026,15 @@ void uiDrawExplorer(const std::vector<DirEntry>& entries, const ExplorerDrawStat
     const int sheetY = kScreenH - sheetH;
     canvasFillRect(0, sheetY, kScreenW, sheetH, false);
     canvasDrawLine(0, sheetY, kScreenW - 1, sheetY, true);
-    canvasFillRoundRect(kScreenW / 2 - 28, sheetY + 8, 56, 6, 3, true);
-
-    const SheetItem items[kSheetCount] = {
-        {"Copy", UiHit::Kind::ExplorerCopy, drawIconCopyLg},
-        {"Cut", UiHit::Kind::ExplorerCut, drawIconCutLg},
-        {"Paste", UiHit::Kind::ExplorerPaste, drawIconPasteLg},
-        {"Rename", UiHit::Kind::ExplorerRename, drawIconRenameLg},
-        {"Delete", UiHit::Kind::ExplorerDelete, drawIconDeleteLg},
-        {"New Folder", UiHit::Kind::ExplorerNew, drawIconNewLg},
-        {"New File", UiHit::Kind::ExplorerNewFile, drawIconNewFileLg},
-    };
+    canvasDrawLine(0, sheetY + 1, kScreenW - 1, sheetY + 1, true);
+    canvasFillRoundRect(kScreenW / 2 - 28, sheetY + 8, 56, 5, 2, true);
     for (int i = 0; i < kSheetCount; ++i) {
       int cx, cy, cw, ch;
       explorerSheetCell(i, cx, cy, cw, ch);
       canvasDrawRoundRect(cx, cy, cw, ch, kBtnRadius, true);
-      items[i].icon(cx + cw / 2, cy + ch / 2 - 12, true);
-      const int tw = canvasTextWidth(items[i].label, kBody);
-      canvasDrawString(cx + (cw - tw) / 2, cy + ch - 24, items[i].label, true, kBody);
+      drawIcon(*kSheetItems[i].icon, cx + cw / 2, cy + ch / 2 - 14);
+      const int tw = canvasTextWidth(kSheetItems[i].label, kSmall);
+      canvasDrawString(cx + (cw - tw) / 2, cy + ch - 30, kSheetItems[i].label, true, kSmall);
     }
   }
 
@@ -1155,7 +1052,7 @@ void uiRedrawExplorerViewport(const std::vector<DirEntry>& entries, const Explor
 }
 
 UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool sheetOpen,
-                    bool clipboardHas, int selectedCount) {
+                    bool clipboardHas, int selectedCount, bool multiSelect) {
   UiHit hit;
 
   if (!sheetOpen && y < statusBarH()) {
@@ -1164,69 +1061,55 @@ UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool
   }
 
   if (sheetOpen) {
-    const int sheetH = explorerSheetH();
-    const int sheetY = kScreenH - sheetH;
-    if (y < sheetY) {
-      hit.kind = UiHit::Kind::ExplorerSheetDismiss;
-      return hit;
-    }
-    static const UiHit::Kind kinds[kSheetCount] = {
-        UiHit::Kind::ExplorerCopy,   UiHit::Kind::ExplorerCut,     UiHit::Kind::ExplorerPaste,
-        UiHit::Kind::ExplorerRename, UiHit::Kind::ExplorerDelete,  UiHit::Kind::ExplorerNew,
-        UiHit::Kind::ExplorerNewFile,
-    };
+    const int sheetY = kScreenH - explorerSheetH();
+    hit.kind = UiHit::Kind::ExplorerSheetDismiss;
+    if (y < sheetY) return hit;
     for (int i = 0; i < kSheetCount; ++i) {
       int cx, cy, cw, ch;
       explorerSheetCell(i, cx, cy, cw, ch);
-      if (hitIconBtn(x, y, cx, cy, cw, ch)) {
-        hit.kind = kinds[i];
+      if (hitRect(x, y, cx, cy, cw, ch)) {
+        hit.kind = kSheetItems[i].kind;
         markHit(hit, cx, cy, cw, ch, kBtnRadius);
         return hit;
       }
     }
-    hit.kind = UiHit::Kind::ExplorerSheetDismiss;
     return hit;
   }
 
-  // Close X
-  constexpr int kCloseW = 52;
-  constexpr int kCloseH = 48;
-  const int closeX = kScreenW - kPad - kCloseW;
-  const int closeY = statusBarH() + 8;
-  if (hitIconBtn(x, y, closeX, closeY, kCloseW, kCloseH)) {
+  if (hitHeaderBack(x, y)) {
     hit.kind = UiHit::Kind::Back;
-    markHit(hit, closeX, closeY, kCloseW, kCloseH, kIconRadius);
+    markHit(hit, kPad - 4, statusBarH() + 10, kHeaderBackW - 8, kHeaderH - 20, kIconRadius);
     return hit;
   }
 
-  // Up chip / path row
-  const int upY = statusBarH() + 62;
-  const int upH = 44;
-  const int upW = kScreenW - 2 * kPad - (clipboardHas ? 110 : 0);
-  if (y >= upY && y < upY + upH && x >= kPad && x < kPad + upW) {
-    hit.kind = canGoUp ? UiHit::Kind::GoUp : UiHit::Kind::None;
-    if (canGoUp) markHit(hit, kPad, upY, upH, upH, kIconRadius);
+  const int crumbTop = contentTop();
+  if (y >= crumbTop && y < crumbTop + kCrumbH) {
+    if (canGoUp && x >= kPad && x < kPad + kCrumbUpW) {
+      hit.kind = UiHit::Kind::GoUp;
+      markHit(hit, kPad, crumbTop + kCrumbH / 2 - 20, kCrumbUpW - 8, 40, kIconRadius);
+      return hit;
+    }
+    for (int i = 0; i < gCrumbCount; ++i) {
+      if (x >= gCrumbs[i].x && x < gCrumbs[i].x + gCrumbs[i].w) {
+        hit.kind = UiHit::Kind::GoPath;
+        hit.index = gCrumbs[i].depth;
+        markHit(hit, gCrumbs[i].x, crumbTop + 6, gCrumbs[i].w, kCrumbH - 12, kIconRadius);
+        return hit;
+      }
+    }
     return hit;
   }
 
-  const int dockY = kScreenH - kExplorerDockH;
-  if (y >= dockY) {
-    const int btnH = 48;
-    const int btnY = dockY + (kExplorerDockH - btnH) / 2;
-    if (clipboardHas && hitIconBtn(x, y, kPad, btnY, 64, btnH)) {
-      hit.kind = UiHit::Kind::ExplorerPaste;
-      markHit(hit, kPad, btnY, 64, btnH, kIconRadius);
-      return hit;
-    }
-    const int menuX = kScreenW - kPad - 64;
-    if (selectedCount == 1 && hitIconBtn(x, y, menuX - 12 - 112, btnY, 112, btnH)) {
-      hit.kind = UiHit::Kind::ExplorerOpen;
-      markHit(hit, menuX - 12 - 112, btnY, 112, btnH);
-      return hit;
-    }
-    if (hitIconBtn(x, y, menuX, btnY, 64, btnH)) {
-      hit.kind = UiHit::Kind::ExplorerMore;
-      markHit(hit, menuX, btnY, 64, btnH, kIconRadius);
+  if (y >= kScreenH - kExplorerDockH) {
+    const bool selecting = multiSelect || selectedCount > 0;
+    DockCell cells[5];
+    const int n = explorerDockCells(selecting, selectedCount, clipboardHas, cells);
+    for (int i = 0; i < n; ++i) {
+      int cx, cy, cw, ch;
+      dockCellRect(i, n, cx, cy, cw, ch);
+      if (!cells[i].icon || !hitRect(x, y, cx, cy - 8, cw, ch + 16)) continue;
+      hit.kind = cells[i].kind;
+      markHit(hit, cx + 4, cy, cw - 8, ch);
       return hit;
     }
     return hit;
@@ -1234,16 +1117,14 @@ UiHit uiHitExplorer(int x, int y, int entryCount, int scroll, bool canGoUp, bool
 
   const int listTop = explorerListTop();
   const int visible = uiExplorerVisibleRows();
-  const int cardW = kScreenW - 2 * kPad;
-
   for (int row = 0; row < visible; ++row) {
     const int idx = scroll + row;
     if (idx >= entryCount) break;
     const int rowY = listTop + row * kExplorerRowH;
-    if (y >= rowY && y < rowY + kExplorerRowH - 8 && x >= kPad && x < kPad + cardW) {
+    if (y >= rowY && y < rowY + kExplorerRowH) {
       hit.kind = UiHit::Kind::SelectEntry;
       hit.index = idx;
-      markHit(hit, kPad, rowY, cardW, kExplorerRowH - 8, kIconRadius);
+      markHit(hit, kPad - 6, rowY + 4, kScreenW - 2 * kPad + 12, kExplorerRowH - 8, kIconRadius);
       return hit;
     }
   }
@@ -1260,10 +1141,10 @@ void drawShadeControls() {
   // Labels sit on the gray sheet — only interactive chrome gets a white fill.
   canvasDrawString(kPad + 8, g.titleY, "Quick settings", true, kTitle);
 
-  drawQsTile(g.tileX, g.tileY, g.icon, g.tileW, wifiIsHotspot(), drawIconTransfer, "Transfer");
-  drawQsTile(g.netX, g.tileY, g.icon, g.tileW, wifiIsStation(), drawIconWifi, "Wi-Fi");
-  drawQsTile(g.gpsX, g.tileY, g.icon, g.tileW, gpsSession(), drawIconGps, "GPS");
-  drawQsTile(g.settingsX, g.tileY, g.icon, g.tileW, false, drawIconGear, "Settings");
+  drawQsTile(g.tileX, g.tileY, g.icon, g.tileW, wifiIsHotspot(), kIconTransfer36, "Transfer");
+  drawQsTile(g.netX, g.tileY, g.icon, g.tileW, wifiIsStation(), kIconWifi36, "Wi-Fi");
+  drawQsTile(g.gpsX, g.tileY, g.icon, g.tileW, gpsSession(), kIconGps36, "GPS");
+  drawQsTile(g.settingsX, g.tileY, g.icon, g.tileW, false, kIconSettings36, "Settings");
 
   drawSectionRule(g.frontRuleY, g.panelX, g.panelW);
   canvasDrawString(kPad + 8, g.frontLabelY, "Frontlight", true, kBody);
@@ -1388,12 +1269,31 @@ UiHit uiHitShade(int x, int y) {
 void drawSettingsStepper(int y, const char* label, const char* value, int minusX, int plusX) {
   constexpr int step = kStepBtn;
   const int bodyH = canvasTextHeight(kBody);
-  canvasDrawString(kPad, y + (step - bodyH) / 2, label, true, kBody, true);
+  canvasDrawString(kPad, y + (step - bodyH) / 2, label, true, kBody);
   drawOutlineBtn(minusX, y, step, step, "-");
   drawOutlineBtn(plusX, y, step, step, "+");
   const int valueW = plusX - (minusX + step);
   const int vx = minusX + step + (valueW - canvasTextWidth(value, kBody)) / 2;
-  canvasDrawString(vx, y + (step - bodyH) / 2, value, true, kBody);
+  canvasDrawString(vx, y + (step - bodyH) / 2, value, true, kBody, true);
+}
+
+void drawSectionLabel(int y, const char* label) { canvasDrawString(kPad, y, label, true, kSmall, true); }
+
+// A full-width row that opens another page or runs an action: icon, label,
+// an optional value, and a chevron when it navigates.
+void drawNavRow(int y, const UiIcon& icon, const char* label, const char* value, bool chevron) {
+  canvasDrawLine(kPad, y, kScreenW - kPad - 1, y, true);
+  const int midY = y + kNavRowH / 2;
+  drawIcon(icon, kPad + 12, midY);
+  canvasDrawString(kPad + 40, midY - canvasTextHeight(kBody) / 2, label, true, kBody);
+  int right = kScreenW - kPad;
+  if (chevron) {
+    drawIcon(kIconChevron24, right - 12, midY);
+    right -= 30;
+  }
+  if (value && value[0]) {
+    canvasDrawString(right - canvasTextWidth(value, kSmall), midY - canvasTextHeight(kSmall) / 2, value, true, kSmall);
+  }
 }
 
 const char* monthName(int month) {
@@ -1403,70 +1303,52 @@ const char* monthName(int month) {
   return names[month];
 }
 
-void hardwareChipRect(int& x, int& y, int& w, int& h) {
-  const SettingsGeom g = settingsGeom();
-  h = 40;
-  w = canvasTextWidth("Hardware", kBody) + 28;
-  x = kScreenW - kPad - w;
-  const int titleH = canvasTextHeight(kTitle);
-  y = g.titleY + (titleH - h) / 2;
+bool hitStepperRow(int x, int y, int rowY, int minusX, int plusX, UiHit::Kind minus, UiHit::Kind plus, UiHit& hit) {
+  if (y < rowY || y >= rowY + kStepBtn) return false;
+  if (x >= minusX && x < minusX + kStepBtn) {
+    hit.kind = minus;
+    markHit(hit, minusX, rowY, kStepBtn, kStepBtn);
+    return true;
+  }
+  if (x >= plusX && x < plusX + kStepBtn) {
+    hit.kind = plus;
+    markHit(hit, plusX, rowY, kStepBtn, kStepBtn);
+    return true;
+  }
+  return false;
 }
 
 void uiDrawSettings(const FlashSpace& space) {
   canvasClear();
   drawStatusBar(space, true);
+  drawHeader("Settings", true);
   const SettingsGeom g = settingsGeom();
-  constexpr int step = kStepBtn;
 
-  canvasDrawString(kPad, g.titleY, "Settings", true, kTitle);
-  int hx, hy, hw, hh;
-  hardwareChipRect(hx, hy, hw, hh);
-  drawOutlineBtn(hx, hy, hw, hh, "Hardware");
-
-  const char* sizeTxt = "Med";
+  drawSectionLabel(g.displayY, "DISPLAY");
+  const char* sizeTxt = "Medium";
   if (boardUiTextSize() <= 0) sizeTxt = "Small";
   else if (boardUiTextSize() >= 2) sizeTxt = "Large";
   drawSettingsStepper(g.textSizeY, "Text size", sizeTxt, g.rowMinusX, g.rowPlusX);
-
-  char sleepTxt[16];
-  if (boardSleepAfterMin() <= 0) snprintf(sleepTxt, sizeof(sleepTxt), "off");
-  else snprintf(sleepTxt, sizeof(sleepTxt), "%dm", boardSleepAfterMin());
-  drawSettingsStepper(g.sleepY, "Auto-sleep", sleepTxt, g.rowMinusX, g.rowPlusX);
-
-  char every[12];
+  char every[16];
   snprintf(every, sizeof(every), "%d pages", boardCleanEvery());
-  drawSettingsStepper(g.cleanY, "Clean every", every, g.cleanMinusX, g.cleanPlusX);
+  drawSettingsStepper(g.cleanY, "Clean every", every, g.rowMinusX, g.rowPlusX);
 
+  drawSectionLabel(g.powerY, "POWER");
+  char sleepTxt[16];
+  if (boardSleepAfterMin() <= 0) snprintf(sleepTxt, sizeof(sleepTxt), "Never");
+  else snprintf(sleepTxt, sizeof(sleepTxt), "%d min", boardSleepAfterMin());
+  drawSettingsStepper(g.sleepY, "Sleep after", sleepTxt, g.rowMinusX, g.rowPlusX);
+  drawNavRow(g.sleepNowY, kIconMoon24, "Sleep now", nullptr, false);
+
+  drawSectionLabel(g.systemY, "SYSTEM");
   const BoardClockInfo clock = boardClock();
-  canvasDrawString(kPad, g.timeLabelY, "Time", true, kBody);
-  if (clock.valid) {
-    canvasDrawString(kScreenW - kPad - canvasTextWidth(clock.time, kBody), g.timeLabelY, clock.time, true,
-                     kBody);
-  }
-  char hourBuf[8];
-  snprintf(hourBuf, sizeof(hourBuf), "%02u", clock.valid ? clock.hour : 0);
-  drawSettingsStepper(g.hourY, "Hour", hourBuf, g.rowMinusX, g.rowPlusX);
-  char minBuf[8];
-  snprintf(minBuf, sizeof(minBuf), "%02u", clock.valid ? clock.minute : 0);
-  drawSettingsStepper(g.minuteY, "Minute", minBuf, g.rowMinusX, g.rowPlusX);
+  char when[32] = "";
+  if (clock.valid) snprintf(when, sizeof(when), "%s, %d %s", clock.time, clock.day, monthName(clock.month));
+  drawNavRow(g.timeY, kIconClock24, "Time & date", when, true);
+  drawNavRow(g.aboutY, kIconInfo24, "About this device", nullptr, true);
+  canvasDrawLine(kPad, g.aboutY + kNavRowH, kScreenW - kPad - 1, g.aboutY + kNavRowH, true);
 
-  canvasDrawString(kPad, g.dateLabelY, "Date", true, kBody);
-  if (clock.valid) {
-    char pretty[24];
-    snprintf(pretty, sizeof(pretty), "%d %s %u", clock.day, monthName(clock.month), clock.year);
-    canvasDrawString(kScreenW - kPad - canvasTextWidth(pretty, kBody), g.dateLabelY, pretty, true, kBody);
-  }
-  char yearBuf[8];
-  snprintf(yearBuf, sizeof(yearBuf), "%u", clock.valid ? clock.year : 2026);
-  drawSettingsStepper(g.yearY, "Year", yearBuf, g.rowMinusX, g.rowPlusX);
-  drawSettingsStepper(g.monthY, "Month", monthName(clock.valid ? clock.month : 1), g.rowMinusX, g.rowPlusX);
-  char dayBuf[8];
-  snprintf(dayBuf, sizeof(dayBuf), "%u", clock.valid ? clock.day : 1);
-  drawSettingsStepper(g.dayY, "Day", dayBuf, g.rowMinusX, g.rowPlusX);
-
-  drawOutlineBtn(kPad, g.powerY, kScreenW - 2 * kPad, kActionBtnH, "Sleep / power off");
-  drawFilledBtn(kPad, g.backY, kScreenW - 2 * kPad, kActionBtnH, "Back");
-  canvasDrawString(kPad, g.tipY, "Hold BOOT to sleep. Press to wake.", true, kSmall);
+  canvasDrawString(kPad, g.tipY, "Hold BOOT to sleep. Press it to wake.", true, kSmall);
   presentNavigation();
 }
 
@@ -1476,61 +1358,101 @@ UiHit uiHitSettings(int x, int y) {
     hit.kind = UiHit::Kind::OpenShade;
     return hit;
   }
-  const SettingsGeom g = settingsGeom();
-  int hx, hy, hw, hh;
-  hardwareChipRect(hx, hy, hw, hh);
-  if (y >= hy && y < hy + hh && x >= hx && x < hx + hw) {
-    hit.kind = UiHit::Kind::Hardware;
-    markHit(hit, hx, hy, hw, hh);
-    return hit;
-  }
-  constexpr int step = kStepBtn;
-  const int minusX = g.rowMinusX;
-  const int plusX = g.rowPlusX;
-
-  auto hitStepper = [&](int rowY, UiHit::Kind minus, UiHit::Kind plus) -> bool {
-    if (y < rowY || y >= rowY + step) return false;
-    if (x >= minusX && x < minusX + step) {
-      hit.kind = minus;
-      markHit(hit, minusX, rowY, step, step);
-      return true;
-    }
-    if (x >= plusX && x < plusX + step) {
-      hit.kind = plus;
-      markHit(hit, plusX, rowY, step, step);
-      return true;
-    }
-    return false;
-  };
-
-  if (hitStepper(g.textSizeY, UiHit::Kind::FontSizeMinus, UiHit::Kind::FontSizePlus)) return hit;
-  if (hitStepper(g.sleepY, UiHit::Kind::SleepAfterMinus, UiHit::Kind::SleepAfterPlus)) return hit;
-  if (hitStepper(g.cleanY, UiHit::Kind::CleanEveryMinus, UiHit::Kind::CleanEveryPlus)) return hit;
-  if (hitStepper(g.hourY, UiHit::Kind::HourMinus, UiHit::Kind::HourPlus)) return hit;
-  if (hitStepper(g.minuteY, UiHit::Kind::MinuteMinus, UiHit::Kind::MinutePlus)) return hit;
-  if (hitStepper(g.yearY, UiHit::Kind::YearMinus, UiHit::Kind::YearPlus)) return hit;
-  if (hitStepper(g.monthY, UiHit::Kind::MonthMinus, UiHit::Kind::MonthPlus)) return hit;
-  if (hitStepper(g.dayY, UiHit::Kind::DayMinus, UiHit::Kind::DayPlus)) return hit;
-
-  if (y >= g.powerY && y < g.powerY + kActionBtnH && x >= kPad && x < kScreenW - kPad) {
-    hit.kind = UiHit::Kind::PowerOff;
-    markHit(hit, kPad, g.powerY, kScreenW - 2 * kPad, kActionBtnH);
-    return hit;
-  }
-  if (y >= g.backY && y < g.backY + kActionBtnH && x >= kPad && x < kScreenW - kPad) {
+  if (hitHeaderBack(x, y)) {
     hit.kind = UiHit::Kind::Back;
-    markHit(hit, kPad, g.backY, kScreenW - 2 * kPad, kActionBtnH);
+    markHit(hit, kPad - 4, statusBarH() + 10, kHeaderBackW - 8, kHeaderH - 20, kIconRadius);
     return hit;
   }
+  const SettingsGeom g = settingsGeom();
+  if (hitStepperRow(x, y, g.textSizeY, g.rowMinusX, g.rowPlusX, UiHit::Kind::FontSizeMinus,
+                    UiHit::Kind::FontSizePlus, hit))
+    return hit;
+  if (hitStepperRow(x, y, g.cleanY, g.rowMinusX, g.rowPlusX, UiHit::Kind::CleanEveryMinus,
+                    UiHit::Kind::CleanEveryPlus, hit))
+    return hit;
+  if (hitStepperRow(x, y, g.sleepY, g.rowMinusX, g.rowPlusX, UiHit::Kind::SleepAfterMinus,
+                    UiHit::Kind::SleepAfterPlus, hit))
+    return hit;
+  auto navRow = [&](int rowY, UiHit::Kind kind) {
+    if (y < rowY || y >= rowY + kNavRowH || x < kPad || x >= kScreenW - kPad) return false;
+    hit.kind = kind;
+    markHit(hit, kPad, rowY + 4, kScreenW - 2 * kPad, kNavRowH - 8);
+    return true;
+  };
+  if (navRow(g.sleepNowY, UiHit::Kind::PowerOff)) return hit;
+  if (navRow(g.timeY, UiHit::Kind::SetTime)) return hit;
+  if (navRow(g.aboutY, UiHit::Kind::Hardware)) return hit;
+  return hit;
+}
+
+void uiDrawSetTime(const FlashSpace& space) {
+  canvasClear();
+  drawStatusBar(space, true);
+  drawHeader("Time & date", true);
+  const SetTimeGeom g = setTimeGeom();
+  const SettingsGeom s = settingsGeom();
+  const BoardClockInfo clock = boardClock();
+
+  canvasDrawString(kPad, g.nowY, clock.valid ? clock.time : "--:--", true, kTitle);
+  char date[32];
+  if (clock.valid) snprintf(date, sizeof(date), "%d %s %u", clock.day, monthName(clock.month), clock.year);
+  else snprintf(date, sizeof(date), "Clock not set");
+  canvasDrawString(kPad, g.nowY + canvasTextHeight(kTitle) + 4, date, true, kSmall);
+
+  drawSectionLabel(g.timeLabelY, "TIME");
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%02u", clock.valid ? clock.hour : 0);
+  drawSettingsStepper(g.hourY, "Hour", buf, s.rowMinusX, s.rowPlusX);
+  snprintf(buf, sizeof(buf), "%02u", clock.valid ? clock.minute : 0);
+  drawSettingsStepper(g.minuteY, "Minute", buf, s.rowMinusX, s.rowPlusX);
+
+  drawSectionLabel(g.dateLabelY, "DATE");
+  snprintf(buf, sizeof(buf), "%u", clock.valid ? clock.year : 2026);
+  drawSettingsStepper(g.yearY, "Year", buf, s.rowMinusX, s.rowPlusX);
+  drawSettingsStepper(g.monthY, "Month", monthName(clock.valid ? clock.month : 1), s.rowMinusX, s.rowPlusX);
+  snprintf(buf, sizeof(buf), "%u", clock.valid ? clock.day : 1);
+  drawSettingsStepper(g.dayY, "Day", buf, s.rowMinusX, s.rowPlusX);
+
+  canvasDrawString(kPad, g.tipY, "Joining Wi-Fi sets the clock from the", true, kSmall);
+  canvasDrawString(kPad, g.tipY + canvasTextHeight(kSmall) + 2, "internet.", true, kSmall);
+  presentNavigation();
+}
+
+UiHit uiHitSetTime(int x, int y) {
+  UiHit hit;
+  if (y < statusBarH()) {
+    hit.kind = UiHit::Kind::OpenShade;
+    return hit;
+  }
+  if (hitHeaderBack(x, y)) {
+    hit.kind = UiHit::Kind::Back;
+    markHit(hit, kPad - 4, statusBarH() + 10, kHeaderBackW - 8, kHeaderH - 20, kIconRadius);
+    return hit;
+  }
+  const SetTimeGeom g = setTimeGeom();
+  const SettingsGeom s = settingsGeom();
+  if (hitStepperRow(x, y, g.hourY, s.rowMinusX, s.rowPlusX, UiHit::Kind::HourMinus, UiHit::Kind::HourPlus, hit))
+    return hit;
+  if (hitStepperRow(x, y, g.minuteY, s.rowMinusX, s.rowPlusX, UiHit::Kind::MinuteMinus, UiHit::Kind::MinutePlus,
+                    hit))
+    return hit;
+  if (hitStepperRow(x, y, g.yearY, s.rowMinusX, s.rowPlusX, UiHit::Kind::YearMinus, UiHit::Kind::YearPlus, hit))
+    return hit;
+  if (hitStepperRow(x, y, g.monthY, s.rowMinusX, s.rowPlusX, UiHit::Kind::MonthMinus, UiHit::Kind::MonthPlus, hit))
+    return hit;
+  if (hitStepperRow(x, y, g.dayY, s.rowMinusX, s.rowPlusX, UiHit::Kind::DayMinus, UiHit::Kind::DayPlus, hit))
+    return hit;
   return hit;
 }
 
 int drawHardwareRow(int y, const char* label, const char* value) {
   const int h = canvasTextHeight(kBody);
-  canvasDrawString(kPad, y, label, true, kBody);
-  const int valueW = canvasTextWidth(value ? value : "", kBody);
-  canvasDrawString(kScreenW - kPad - valueW, y, value ? value : "", true, kBody);
-  return y + h + 14;
+  canvasDrawString(kPad, y + (h - canvasTextHeight(kSmall)) / 2, label, true, kSmall);
+  char v[48];
+  snprintf(v, sizeof(v), "%s", value ? value : "");
+  fitText(v, kScreenW - 2 * kPad - 120, kBody);
+  canvasDrawString(kScreenW - kPad - canvasTextWidth(v, kBody), y, v, true, kBody);
+  return y + h + 12;
 }
 
 int drawHardwareRule(int y) {
@@ -1551,10 +1473,9 @@ static int gGpsMapH = 0;
 void uiDrawHardware(const FlashSpace& space) {
   canvasClear();
   drawStatusBar(space, true);
+  drawHeader("About this device", true);
   const BoardDeviceInfo device = boardDeviceInfo();
-  int y = statusBarH() + kPad;
-  canvasDrawString(kPad, y, "Hardware", true, kTitle);
-  y += canvasTextHeight(kTitle) + 22;
+  int y = contentTop() + 8;
 
   y = drawHardwareRow(y, "Board", device.product);
   y = drawHardwareRow(y, "Panel", device.panel);
@@ -1579,9 +1500,6 @@ void uiDrawHardware(const FlashSpace& space) {
   appsFormatBytes(space.guestTotal, totalBuf, sizeof(totalBuf));
   snprintf(slots, sizeof(slots), "%s free / %s", freeBuf, totalBuf);
   drawHardwareRow(y, "App slots", slots);
-
-  const int backY = kScreenH - kPad - kActionBtnH;
-  drawFilledBtn(kPad, backY, kScreenW - 2 * kPad, kActionBtnH, "Back");
   presentNavigation();
 }
 
@@ -1591,10 +1509,9 @@ UiHit uiHitHardware(int x, int y) {
     hit.kind = UiHit::Kind::OpenShade;
     return hit;
   }
-  if (y >= kScreenH - kActionBtnH - kPad - 8 && y < kScreenH - kPad && x >= kPad &&
-      x < kScreenW - kPad) {
+  if (hitHeaderBack(x, y)) {
     hit.kind = UiHit::Kind::Back;
-    markHit(hit, kPad, kScreenH - kPad - kActionBtnH, kScreenW - 2 * kPad, kActionBtnH);
+    markHit(hit, kPad - 4, statusBarH() + 10, kHeaderBackW - 8, kHeaderH - 20, kIconRadius);
     return hit;
   }
   return hit;
@@ -1625,7 +1542,7 @@ void drawSkyCircle(int cx, int cy, int r) {
 
 int paintGpsHeader() {
   const GpsView view = gpsView();
-  int y = statusBarH() + 8;
+  int y = contentTop() + 4;
 
   char line[48];
   const char* fixName = "Searching";
@@ -1655,7 +1572,7 @@ int paintGpsHeader() {
 
   const int skyR = 48;
   const int skyCx = kScreenW - kPad - skyR;
-  const int skyCy = statusBarH() + canvasTextHeight(kBody) + 10 + skyR;
+  const int skyCy = contentTop() + canvasTextHeight(kBody) + 6 + skyR;
   drawSkyCircle(skyCx, skyCy, skyR);
   canvasDrawString(skyCx - canvasTextWidth("N", kBody) / 2, skyCy - skyR - canvasTextHeight(kBody) - 1, "N",
                    true, kBody);
@@ -1706,14 +1623,13 @@ void paintGpsMap() {
 void uiDrawGps() {
   canvasClear();
   drawStatusBar(appsFlashSpace(), true);
+  drawHeader("GPS", true);
   const int y = paintGpsHeader();
-  const int backY = kScreenH - kPad - kActionBtnH;
   gGpsMapX = 0;
   gGpsMapY = y;
   gGpsMapW = kScreenW;
-  gGpsMapH = backY - 8 - y;
+  gGpsMapH = kScreenH - y;
   paintGpsMap();
-  drawFilledBtn(kPad, backY, kScreenW - 2 * kPad, kActionBtnH, "Back");
   // A fast update turns a mostly white map grey and drops the thin lines.
   canvasPresent(EInkDisplay::HALF_REFRESH);
 }
@@ -1755,7 +1671,7 @@ void uiRedrawGpsMap() {
 }
 
 void uiRedrawGpsStatus(bool present) {
-  const int top = statusBarH();
+  const int top = contentTop();
   if (gGpsMapY <= top) {
     uiDrawGps();
     return;
@@ -1778,10 +1694,9 @@ UiHit uiHitGps(int x, int y) {
     hit.kind = UiHit::Kind::OpenShade;
     return hit;
   }
-  const int backY = kScreenH - kPad - kActionBtnH;
-  if (y >= backY && y < backY + kActionBtnH && x >= kPad && x < kScreenW - kPad) {
+  if (hitHeaderBack(x, y)) {
     hit.kind = UiHit::Kind::Back;
-    markHit(hit, kPad, backY, kScreenW - 2 * kPad, kActionBtnH);
+    markHit(hit, kPad - 4, statusBarH() + 10, kHeaderBackW - 8, kHeaderH - 20, kIconRadius);
     return hit;
   }
   constexpr int btn = 52;
@@ -1823,9 +1738,8 @@ void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssi
                 const char* urlLine, const char* detailLine, bool active) {
   canvasClear();
   drawStatusBar(space, true);
-  int y = statusBarH() + kPad;
-  canvasDrawString(kPad, y, "File transfer", true, kTitle);
-  y += canvasTextHeight(kTitle) + 14;
+  drawHeader("File transfer", true);
+  int y = contentTop() + 4;
 
   auto line = [&](const char* label, const char* value) {
     canvasDrawString(kPad, y, label, true, kSmall);
@@ -1868,7 +1782,7 @@ void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssi
   }
 
   const int btnW = kScreenW - 2 * kPad;
-  const int backY = kScreenH - kPad - kActionBtnH;
+  const int backY = kScreenH - kPad;
   auto placeBtn = [&](const char* label, bool filled) {
     if (y + kActionBtnH + 10 > backY) return;
     if (filled) drawFilledBtn(kPad, y, btnW, kActionBtnH, label);
@@ -1882,7 +1796,6 @@ void uiDrawWifi(const FlashSpace& space, const char* statusLine, const char* ssi
   } else {
     placeBtn("Stop transfer", false);
   }
-  drawFilledBtn(kPad, backY, btnW, kActionBtnH, "Back");
   presentNavigation();
 }
 
@@ -1893,14 +1806,14 @@ UiHit uiHitWifi(int x, int y, bool active) {
     return hit;
   }
   const int btnW = kScreenW - 2 * kPad;
-  const int backY = kScreenH - kPad - kActionBtnH;
-  if (y >= backY && y < backY + kActionBtnH && x >= kPad && x < kPad + btnW) {
+  const int backY = kScreenH - kPad;
+  if (hitHeaderBack(x, y)) {
     hit.kind = UiHit::Kind::Back;
-    markHit(hit, kPad, backY, btnW, kActionBtnH);
+    markHit(hit, kPad - 4, statusBarH() + 10, kHeaderBackW - 8, kHeaderH - 20, kIconRadius);
     return hit;
   }
 
-  int by = statusBarH() + kPad + canvasTextHeight(kTitle) + 14;
+  int by = contentTop() + 4;
   by += (canvasTextHeight(kSmall) + 2 + canvasTextHeight(kBody) + 10) * 4;
   by += canvasTextHeight(kSmall) + 12;
 
@@ -1930,64 +1843,107 @@ UiHit uiHitWifi(int x, int y, bool active) {
   return hit;
 }
 
-int gNetScanY = -1;
 int gNetListY = 0;
-int gNetRowH = 46;
+constexpr int kNetRowH = 58;
 int gNetShown = 0;
-int gNetDiscY = -1;
-int gNetBrowseY = -1;
+int gNetBtnY = 0;
+bool gNetConnected = false;
+
+// Four bars, filled up to the signal level and outlined beyond it, so a weak
+// network still shows the whole scale.
+void drawSignalBars(int cx, int cy, int rssi) {
+  const int level = rssi >= -55 ? 4 : rssi >= -67 ? 3 : rssi >= -78 ? 2 : 1;
+  constexpr int kBarW = 4;
+  constexpr int kGap = 2;
+  const int left = cx - (4 * kBarW + 3 * kGap) / 2;
+  const int bottom = cy + 9;
+  for (int i = 0; i < 4; ++i) {
+    const int h = 6 + i * 4;
+    const int x = left + i * (kBarW + kGap);
+    if (i < level) canvasFillRect(x, bottom - h, kBarW, h, true);
+    else canvasDrawRect(x, bottom - h, kBarW, h, true);
+  }
+}
+
+// Disconnect (when connected) and Browse share the bottom row.
+void netButtonRects(bool connected, int& discX, int& browseX, int& w) {
+  const int full = kScreenW - 2 * kPad;
+  if (connected) {
+    w = (full - 12) / 2;
+    discX = kPad;
+    browseX = kPad + w + 12;
+  } else {
+    w = full;
+    discX = -1;
+    browseX = kPad;
+  }
+}
 
 void uiDrawNet(const FlashSpace& space, const WifiStatus& status, const WifiAp* aps, int count) {
   canvasClear();
   drawStatusBar(space, true);
-  int y = statusBarH() + kPad;
-  canvasDrawString(kPad, y, "Wi-Fi", true, kTitle);
-  y += canvasTextHeight(kTitle) + 12;
-  const char* state = status.connected && status.mode == WifiMode::Station ? "Connected" : "Not connected";
-  canvasDrawString(kPad, y, state, true, kBody, true);
-  y += canvasTextHeight(kBody) + 4;
-  canvasDrawString(kPad, y, status.ssid[0] ? status.ssid : "No network", true, kBody);
-  y += canvasTextHeight(kBody) + 2;
-  char ipLine[48];
-  if (status.connected && status.ip[0]) snprintf(ipLine, sizeof(ipLine), "%s", status.ip);
-  else snprintf(ipLine, sizeof(ipLine), " ");
-  canvasDrawString(kPad, y, ipLine, true, kSmall);
-  y += canvasTextHeight(kSmall) + 12;
+  drawHeader("Wi-Fi", true);
+  int ax, ay, aw, ah;
+  headerActionRect(ax, ay, aw, ah);
+  drawIcon(kIconRefresh24, ax + aw / 2, ay + ah / 2);
 
-  const int btnW = kScreenW - 2 * kPad;
-  const int backY = kScreenH - kPad - kActionBtnH;
-  gNetBrowseY = backY - 10 - kActionBtnH;
-  gNetDiscY = (status.connected && status.mode == WifiMode::Station) ? gNetBrowseY - 10 - kActionBtnH : -1;
-  gNetScanY = y;
-  y += kActionBtnH + 12;
+  const bool connected = status.connected && status.mode == WifiMode::Station;
+  gNetConnected = connected;
+  int y = contentTop() + 4;
+  if (connected) {
+    drawIcon(kIconCheck24, kPad + 12, y + canvasTextHeight(kBody) / 2);
+    char line[48];
+    snprintf(line, sizeof(line), "Connected to %s", status.ssid);
+    fitText(line, kScreenW - 2 * kPad - 36, kBody);
+    canvasDrawString(kPad + 36, y, line, true, kBody, true);
+    y += canvasTextHeight(kBody) + 4;
+    canvasDrawString(kPad + 36, y, status.ip, true, kSmall);
+  } else {
+    canvasDrawString(kPad, y, "Not connected", true, kBody, true);
+    y += canvasTextHeight(kBody) + 4;
+    canvasDrawString(kPad, y, "Pick a network below.", true, kSmall);
+  }
+  y += canvasTextHeight(kSmall) + 22;
+  drawSectionLabel(y, "NETWORKS");
+  y += canvasTextHeight(kSmall) + 6;
+
+  gNetBtnY = kScreenH - kPad - kActionBtnH;
   gNetListY = y;
-  const int listBottom = (gNetDiscY >= 0 ? gNetDiscY : gNetBrowseY) - 8;
   gNetShown = 0;
-  if (aps && count > 0 && listBottom > gNetListY) {
-    gNetShown = (listBottom - gNetListY) / gNetRowH;
-    if (gNetShown > count) gNetShown = count;
+  if (aps && count > 0) gNetShown = std::min(count, (gNetBtnY - 12 - gNetListY) / kNetRowH);
+
+  for (int i = 0; i < gNetShown; ++i) {
+    const int rowY = gNetListY + i * kNetRowH;
+    const int midY = rowY + kNetRowH / 2;
+    const bool current = connected && strcmp(aps[i].ssid, status.ssid) == 0;
+    canvasDrawLine(kPad, rowY, kScreenW - kPad - 1, rowY, true);
+    drawSignalBars(kPad + 12, midY, aps[i].rssi);
+    int right = kScreenW - kPad;
+    if (current) {
+      drawIcon(kIconCheck24, right - 12, midY);
+      right -= 32;
+    }
+    if (!aps[i].open) {
+      drawIcon(kIconLock20, right - 10, midY);
+      right -= 28;
+    }
+    char name[40];
+    snprintf(name, sizeof(name), "%s", aps[i].ssid[0] ? aps[i].ssid : "(hidden)");
+    fitText(name, right - 8 - (kPad + 40), kBody);
+    canvasDrawString(kPad + 40, midY - canvasTextHeight(kBody) / 2, name, true, kBody, current);
+  }
+  if (gNetShown > 0) {
+    const int endY = gNetListY + gNetShown * kNetRowH;
+    canvasDrawLine(kPad, endY, kScreenW - kPad - 1, endY, true);
+  } else {
+    canvasDrawString(kPad, gNetListY + 8, count == 0 ? "No networks found. Tap Scan." : "No room for the list.", true,
+                     kBody);
   }
 
-  drawOutlineBtn(kPad, gNetScanY, btnW, kActionBtnH, "Scan");
-  for (int i = 0; i < gNetShown; ++i) {
-    const int rowY = gNetListY + i * gNetRowH;
-    canvasDrawRoundRect(kPad, rowY, btnW, gNetRowH - 6, 12, true);
-    char rssi[16];
-    snprintf(rssi, sizeof(rssi), "%d", aps[i].rssi);
-    const int rssiW = canvasTextWidth(rssi, kSmall);
-    canvasDrawString(kPad + btnW - 12 - rssiW, rowY + 8, rssi, true, kSmall);
-    char name[40];
-    snprintf(name, sizeof(name), "%s%s", aps[i].ssid, aps[i].open ? "" : " *");
-    const int maxW = btnW - 24 - rssiW - 8;
-    while (name[0] && canvasTextWidth(name, kBody) > maxW) name[strlen(name) - 1] = 0;
-    canvasDrawString(kPad + 12, rowY + 8, name, true, kBody);
-  }
-  if (gNetShown == 0) {
-    canvasDrawString(kPad, gNetListY, count == 0 ? "No networks yet" : "No room for the list", true, kBody);
-  }
-  if (gNetDiscY >= 0) drawOutlineBtn(kPad, gNetDiscY, btnW, kActionBtnH, "Disconnect");
-  drawFilledBtn(kPad, gNetBrowseY, btnW, kActionBtnH, "Browse");
-  drawFilledBtn(kPad, backY, btnW, kActionBtnH, "Back");
+  int discX, browseX, w;
+  netButtonRects(connected, discX, browseX, w);
+  if (discX >= 0) drawOutlineBtn(discX, gNetBtnY, w, kActionBtnH, "Disconnect");
+  drawFilledBtn(browseX, gNetBtnY, w, kActionBtnH, "Browse the web");
   presentNavigation();
 }
 
@@ -1997,105 +1953,130 @@ UiHit uiHitNet(int x, int y) {
     hit.kind = UiHit::Kind::OpenShade;
     return hit;
   }
-  const int btnW = kScreenW - 2 * kPad;
-  const int backY = kScreenH - kPad - kActionBtnH;
-  auto hitBtn = [&](int by, UiHit::Kind kind) {
-    if (by < 0 || y < by || y >= by + kActionBtnH || x < kPad || x >= kPad + btnW) return false;
-    hit.kind = kind;
-    markHit(hit, kPad, by, btnW, kActionBtnH);
-    return true;
-  };
-  if (hitBtn(backY, UiHit::Kind::Back)) return hit;
-  if (hitBtn(gNetBrowseY, UiHit::Kind::WebOpen)) return hit;
-  if (hitBtn(gNetDiscY, UiHit::Kind::NetDisconnect)) return hit;
-  if (hitBtn(gNetScanY, UiHit::Kind::NetScan)) return hit;
-  if (gNetShown > 0 && y >= gNetListY && x >= kPad && x < kPad + btnW) {
-    const int row = (y - gNetListY) / gNetRowH;
-    if (row >= 0 && row < gNetShown && y < gNetListY + row * gNetRowH + gNetRowH - 6) {
-      hit.kind = UiHit::Kind::NetJoin;
-      hit.index = row;
-      markHit(hit, kPad, gNetListY + row * gNetRowH, btnW, gNetRowH - 6, 12);
-      return hit;
+  if (hitHeaderBack(x, y)) {
+    hit.kind = UiHit::Kind::Back;
+    markHit(hit, kPad - 4, statusBarH() + 10, kHeaderBackW - 8, kHeaderH - 20, kIconRadius);
+    return hit;
+  }
+  int ax, ay, aw, ah;
+  headerActionRect(ax, ay, aw, ah);
+  if (hitRect(x, y, ax, ay, aw, ah)) {
+    hit.kind = UiHit::Kind::NetScan;
+    markHit(hit, ax, ay, aw, ah, kIconRadius);
+    return hit;
+  }
+  int discX, browseX, w;
+  netButtonRects(gNetConnected, discX, browseX, w);
+  if (y >= gNetBtnY && y < gNetBtnY + kActionBtnH) {
+    if (discX >= 0 && x >= discX && x < discX + w) {
+      hit.kind = UiHit::Kind::NetDisconnect;
+      markHit(hit, discX, gNetBtnY, w, kActionBtnH);
+    } else if (x >= browseX && x < browseX + w) {
+      hit.kind = UiHit::Kind::WebOpen;
+      markHit(hit, browseX, gNetBtnY, w, kActionBtnH);
     }
+    return hit;
+  }
+  if (gNetShown > 0 && y >= gNetListY && y < gNetListY + gNetShown * kNetRowH && x >= kPad && x < kScreenW - kPad) {
+    const int row = (y - gNetListY) / kNetRowH;
+    hit.kind = UiHit::Kind::NetJoin;
+    hit.index = row;
+    markHit(hit, kPad, gNetListY + row * kNetRowH + 4, kScreenW - 2 * kPad, kNetRowH - 8, 12);
   }
   return hit;
 }
 
-void uiDrawProgress(const char* title, int percent) {
+void uiDrawProgress(const char* title, int percent, const char* note) {
   if (percent < 0) percent = 0;
   if (percent > 100) percent = 100;
   const char* shownTitle = title ? title : "Working...";
   static char lastTitle[64] = {};
   static int lastPercent = 101;
   const bool newProgress = strcmp(lastTitle, shownTitle) != 0 || percent <= lastPercent;
+  const int textW = kScreenW - 2 * kPad;
+  const int titleY = statusBarH() + 120;
+  const int barY = titleY + 2 * (canvasTextHeight(kBody) + 4) + 16;
   if (newProgress) {
     canvasClear();
     drawStatusBar(appsFlashSpace(), false);
-    canvasDrawString(kPad, statusBarH() + 80, shownTitle, true, kTitle);
+    drawWrapped(shownTitle, kPad, titleY, textW, kBody, 2, true);
+    if (note && note[0]) drawWrapped(note, kPad, barY + 100, textW, kSmall, 3);
   }
   const int barX = kPad;
-  const int barY = statusBarH() + 140;
-  const int barW = kScreenW - 2 * kPad;
-  const int barH = 32;
-  const int dirtyH = 48 + canvasTextHeight(2);
+  const int barW = textW;
+  const int barH = 28;
+  const int dirtyH = 48 + canvasTextHeight(kTitle);
   if (!newProgress) canvasFillRect(barX - 2, barY - 2, barW + 4, dirtyH + 4, false);
   canvasDrawRoundRect(barX, barY, barW, barH, 10, true);
   const int fill = (barW - 6) * percent / 100;
   if (fill > 0) canvasFillRoundRect(barX + 3, barY + 3, fill, barH - 6, 6, true);
   char pct[16];
   snprintf(pct, sizeof(pct), "%d%%", percent);
-  canvasDrawString(kPad, barY + 48, pct, true, 2);
+  canvasDrawString(kPad, barY + 44, pct, true, kTitle);
   snprintf(lastTitle, sizeof(lastTitle), "%s", shownTitle);
   lastPercent = percent;
   canvasPresentFor(CanvasRefreshIntent::Progress,
                    newProgress ? CanvasRect{} : CanvasRect{barX - 2, barY - 2, barW + 4, dirtyH + 4});
 }
 
+namespace {
+
+// Dialogs: content in the upper half, actions in a row at the bottom.
+constexpr int kDialogTop = 150;
+int dialogButtonY() { return kScreenH - kPad - kActionBtnH - 8; }
+
+int drawDialogText(const char* title, const char* body, const UiIcon* icon) {
+  int y = statusBarH() + kDialogTop;
+  if (icon) {
+    drawIcon(*icon, kPad + icon->w / 2, y + icon->h / 2);
+    y += icon->h + 16;
+  }
+  y = drawWrapped(title, kPad, y, kScreenW - 2 * kPad, kTitle, 2);
+  return drawWrapped(body, kPad, y + 10, kScreenW - 2 * kPad, kBody, 8);
+}
+
+}  // namespace
+
 UiHit uiHitMessage(int x, int y) {
   UiHit hit;
-  const int okX = kPad;
-  const int okY = kScreenH - kDockH - 70;
+  const int okY = dialogButtonY();
   const int okW = kScreenW - 2 * kPad;
-  const int okH = kActionBtnH;
-  if (x >= okX && x < okX + okW && y >= okY && y < okY + okH) markHit(hit, okX, okY, okW, okH);
+  if (x >= kPad && x < kPad + okW && y >= okY && y < okY + kActionBtnH) markHit(hit, kPad, okY, okW, kActionBtnH);
   return hit;
 }
 
 void uiDrawMessage(const char* title, const char* body) {
   canvasClear();
   drawStatusBar(appsFlashSpace(), false);
-  canvasDrawString(kPad, statusBarH() + 28, title ? title : "Notice", true, kTitle);
-  drawWrappedBody(body, statusBarH() + 70);
-  drawFilledBtn(kPad, kScreenH - kDockH - 70, kScreenW - 2 * kPad, kActionBtnH, "OK");
+  drawDialogText(title ? title : "Notice", body, nullptr);
+  drawFilledBtn(kPad, dialogButtonY(), kScreenW - 2 * kPad, kActionBtnH, "OK");
   presentQuality();
 }
 
-void uiDrawConfirm(const char* title, const char* body) {
+void uiDrawConfirm(const char* title, const char* body, const char* yesLabel) {
   canvasClear();
   drawStatusBar(appsFlashSpace(), false);
-  canvasDrawString(kPad, statusBarH() + 28, title ? title : "Confirm", true, kTitle);
-  drawWrappedBody(body, statusBarH() + 70);
-  const int y = kScreenH - kDockH;
-  canvasDrawLine(0, y, kScreenW - 1, y, true);
+  drawDialogText(title ? title : "Confirm", body, &kIconAlert40);
+  const int y = dialogButtonY();
   const int tileW = (kScreenW - 3 * kPad) / 2;
-  drawOutlineBtn(kPad, y + 12, tileW, kDockH - 24, "Cancel");
-  drawFilledBtn(kPad * 2 + tileW, y + 12, tileW, kDockH - 24, "Yes");
+  drawOutlineBtn(kPad, y, tileW, kActionBtnH, "Cancel");
+  drawFilledBtn(kPad * 2 + tileW, y, tileW, kActionBtnH, yesLabel && yesLabel[0] ? yesLabel : "OK");
   presentQuality();
 }
 
 UiHit uiHitConfirm(int x, int y) {
   UiHit hit;
-  const int dockY = kScreenH - kDockH;
-  if (y < dockY + 12 || y >= dockY + kDockH - 12) return hit;
+  const int by = dialogButtonY();
+  if (y < by - 8 || y >= by + kActionBtnH + 8) return hit;
   const int tileW = (kScreenW - 3 * kPad) / 2;
   if (x >= kPad && x < kPad + tileW) {
     hit.kind = UiHit::Kind::ConfirmNo;
-    markHit(hit, kPad, dockY + 12, tileW, kDockH - 24);
+    markHit(hit, kPad, by, tileW, kActionBtnH);
     return hit;
   }
   if (x >= kPad * 2 + tileW && x < kPad * 2 + tileW * 2) {
     hit.kind = UiHit::Kind::ConfirmYes;
-    markHit(hit, kPad * 2 + tileW, dockY + 12, tileW, kDockH - 24);
+    markHit(hit, kPad * 2 + tileW, by, tileW, kActionBtnH);
     return hit;
   }
   return hit;
@@ -2137,9 +2118,9 @@ namespace {
 // Phone-style QWERTY: 3 letter rows + bottom bar. Fat keys, small side margins.
 constexpr int kOskSide = 6;
 constexpr int kOskGap = 6;
-constexpr int kOskKeyH = 58;
+constexpr int kOskKeyH = 74;  // tall enough for a thumb, and for title-size letters
 constexpr int kOskRows = 4;
-constexpr int kOskBarH = 46;  // Cancel / Done above keyboard
+constexpr int kOskBarH = 52;  // Cancel / Done above keyboard
 constexpr int kOskBot = 10;
 constexpr int kOskRadius = 10;
 
@@ -2160,17 +2141,13 @@ int oskRowY(int row) { return oskTopY() + row * (kOskKeyH + kOskGap); }
 
 void drawOskKey(int x, int y, int w, int h, const char* label, bool inverted = false) {
   if (w <= 0 || h <= 0) return;
-  if (inverted) {
-    canvasFillRoundRect(x, y, w, h, kOskRadius, true);
-    const int tw = canvasTextWidth(label, kBody);
-    const int th = canvasTextHeight(kBody);
-    canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, false, kBody);
-  } else {
-    canvasDrawRoundRect(x, y, w, h, kOskRadius, true);
-    const int tw = canvasTextWidth(label, kBody);
-    const int th = canvasTextHeight(kBody);
-    canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, true, kBody);
-  }
+  // Single characters at title size, words ("space", "123") at body size.
+  const int scale = label[0] && !label[1] && canvasTextWidth(label, kTitle) + 8 <= w ? kTitle : kBody;
+  if (inverted) canvasFillRoundRect(x, y, w, h, kOskRadius, true);
+  else canvasDrawRoundRect(x, y, w, h, kOskRadius, true);
+  const int tw = canvasTextWidth(label, scale);
+  const int th = canvasTextHeight(scale);
+  canvasDrawString(x + (w - tw) / 2, y + (h - th) / 2, label, !inverted, scale);
 }
 
 // Custom icons — font is ASCII-only, so shift/backspace are drawn.
@@ -2560,7 +2537,7 @@ CanvasRect textFieldWindow(TextEditMode mode) {
   const bool nameMode = mode == TextEditMode::Rename || mode == TextEditMode::NewFolder ||
                         mode == TextEditMode::NewFile || mode == TextEditMode::ApPassword ||
                         mode == TextEditMode::StaPassword || mode == TextEditMode::WebUrl ||
-                        mode == TextEditMode::WebField;
+                        mode == TextEditMode::WebField || mode == TextEditMode::SlotRename;
   const int actionY = oskActionBarY();
   const int fieldTop = statusBarH() + kPad + 40;
   if (nameMode) {
@@ -2576,7 +2553,7 @@ void drawTextEditField(const char* text, TextEditMode mode) {
   const bool nameMode = mode == TextEditMode::Rename || mode == TextEditMode::NewFolder ||
                         mode == TextEditMode::NewFile || mode == TextEditMode::ApPassword ||
                         mode == TextEditMode::StaPassword || mode == TextEditMode::WebUrl ||
-                        mode == TextEditMode::WebField;
+                        mode == TextEditMode::WebField || mode == TextEditMode::SlotRename;
 
   const int actionY = oskActionBarY();
   const int fieldTop = statusBarH() + kPad + 40;
@@ -2592,6 +2569,7 @@ void drawTextEditField(const char* text, TextEditMode mode) {
     else if (mode == TextEditMode::StaPassword) hint = "Network password";
     else if (mode == TextEditMode::WebUrl) hint = "example.com or https://...";
     else if (mode == TextEditMode::WebField) hint = "Search text";
+    else if (mode == TextEditMode::SlotRename) hint = "Name shown on Home";
     // Clear hint + name box (leave keyboard alone).
     const int boxY = fieldTop + 22;
     const int boxH = 56;
@@ -2709,14 +2687,15 @@ void uiDrawTextEdit(const char* title, const char* text, bool symbols, bool shif
   else if (mode == TextEditMode::NewFile) heading = "New file";
   else if (mode == TextEditMode::Rename) heading = "Rename";
   else if (mode == TextEditMode::ApPassword) heading = "Hotspot password";
+  else if (mode == TextEditMode::SlotRename) heading = "Rename app";
   canvasDrawString(kPad, statusBarH() + kPad, heading, true, kTitle);
 
   drawTextEditField(text, mode);
 
   const int actionY = oskActionBarY();
   const char* doneLabel = (mode == TextEditMode::EditFile) ? "Save" : "Done";
-  drawOutlineBtn(kPad, actionY, 120, kOskBarH, "Cancel");
-  drawFilledBtn(kScreenW - kPad - 120, actionY, 120, kOskBarH, doneLabel);
+  drawOutlineBtn(kPad, actionY, 140, kOskBarH, "Cancel");
+  drawFilledBtn(kScreenW - kPad - 140, actionY, 140, kOskBarH, doneLabel);
 
   drawOsk(symbols, shift);
   if (scrub) presentQuality();
@@ -2738,14 +2717,14 @@ UiHit uiHitTextEdit(int x, int y, bool symbols, bool shift) {
   }
   const int actionY = oskActionBarY();
   if (y >= actionY && y < actionY + kOskBarH) {
-    if (x >= kPad && x < kPad + 120) {
+    if (x >= kPad && x < kPad + 140) {
       hit.kind = UiHit::Kind::KeyCancel;
-      markHit(hit, kPad, actionY, 120, kOskBarH);
+      markHit(hit, kPad, actionY, 140, kOskBarH);
       return hit;
     }
-    if (x >= kScreenW - kPad - 120 && x < kScreenW - kPad) {
+    if (x >= kScreenW - kPad - 140 && x < kScreenW - kPad) {
       hit.kind = UiHit::Kind::KeyDone;
-      markHit(hit, kScreenW - kPad - 120, actionY, 120, kOskBarH);
+      markHit(hit, kScreenW - kPad - 140, actionY, 140, kOskBarH);
       return hit;
     }
   }
@@ -2760,43 +2739,116 @@ UiHit uiHitHome(int x, int y) {
     hit.kind = UiHit::Kind::OpenShade;
     return hit;
   }
-
-  int fx, fy, fw, fh;
-  homeChipRect(0, fx, fy, fw, fh);
-  if (y >= fy && y < fy + fh && x >= fx && x < fx + fw) {
-    hit.kind = UiHit::Kind::OpenFiles;
-    markHit(hit, fx, fy + 8, fw, fh - 16);
-    return hit;
-  }
-  int wx, wy, ww, wh;
-  homeChipRect(1, wx, wy, ww, wh);
-  if (y >= wy && y < wy + wh && x >= wx && x < wx + ww) {
-    hit.kind = UiHit::Kind::WebOpen;
-    markHit(hit, wx, wy + 8, ww, wh - 16);
-    return hit;
-  }
-
+  const HomeLayout g = homeLayout(gHomeResumeSlot >= 0);
   const int cardW = kScreenW - 2 * kPad;
+
+  if (gHomeResumeSlot >= 0 && y >= g.resumeY && y < g.resumeY + kResumeH && x >= kPad && x < kPad + cardW) {
+    hit.kind = UiHit::Kind::ResumeLast;
+    hit.index = gHomeResumeSlot;
+    markHit(hit, kPad, g.resumeY, cardW, kResumeH, kRadius);
+    return hit;
+  }
+
+  static const UiHit::Kind kFooter[3] = {UiHit::Kind::OpenFiles, UiHit::Kind::WebOpen, UiHit::Kind::Settings};
+  for (int i = 0; i < 3; ++i) {
+    int fx, fy, fw, fh;
+    homeFooterRect(i, fx, fy, fw, fh);
+    if (y >= fy - 6 && y < fy + fh + 6 && x >= fx && x < fx + fw) {
+      hit.kind = kFooter[i];
+      markHit(hit, fx, fy, fw, fh);
+      return hit;
+    }
+  }
+
   for (int i = 0; i < kSlotCount; ++i) {
-    const int cy = slotCardY(i);
-    const int h = slotCardH();
-    if (y < cy || y >= cy + h) continue;
-    const int by = cy + h - kBtnH - 14;
-    const int btnX = kPad + cardW - kBtnW - 14;
-    if (y >= by && y < by + kBtnH && x >= btnX && x < btnX + kBtnW) {
-      hit.kind = appsSlotInfo(i).occupied ? UiHit::Kind::ClearSlot : UiHit::Kind::BootSlot;
-      hit.index = i;
-      markHit(hit, btnX, by, kBtnW, kBtnH);
+    const int cy = slotCardY(g, i);
+    if (y < cy || y >= cy + g.rowH || x < kPad || x >= kPad + cardW) continue;
+    hit.index = i;
+    const bool occupied = appsSlotInfo(i).occupied;
+    if (occupied && x >= kPad + cardW - kCardMoreW) {
+      hit.kind = UiHit::Kind::SlotMenuOpen;
+      markHit(hit, kPad + cardW - kCardMoreW, cy + 8, kCardMoreW - 8, g.rowH - 16);
       return hit;
     }
-    if (x >= kPad && x < kPad + cardW) {
-      hit.kind = UiHit::Kind::BootSlot;
-      hit.index = i;
-      markHit(hit, kPad, cy, cardW, h, kRadius);
-      return hit;
-    }
+    hit.kind = UiHit::Kind::BootSlot;
+    markHit(hit, kPad, cy, cardW, g.rowH, kRadius);
+    return hit;
   }
   return hit;
 }
 
 
+
+namespace {
+
+// Slot sheet: Open, Update (when /firmware has a newer build), Rename, Clear.
+constexpr int kSlotMenuRowH = 64;
+constexpr int kSlotMenuHeadH = 96;
+
+struct SlotMenuItem {
+  UiHit::Kind kind;
+  const UiIcon* icon;
+  const char* label;
+};
+
+int slotMenuItems(bool hasUpdate, SlotMenuItem out[4]) {
+  int n = 0;
+  out[n++] = {UiHit::Kind::BootSlot, &kIconPlay28, "Open"};
+  if (hasUpdate) out[n++] = {UiHit::Kind::SlotUpdate, &kIconUpdate24, "Update"};
+  out[n++] = {UiHit::Kind::SlotRename, &kIconRename24, "Rename"};
+  out[n++] = {UiHit::Kind::ClearSlot, &kIconTrash24, "Clear slot"};
+  return n;
+}
+
+int slotMenuTop(int count) { return kScreenH - (kSlotMenuHeadH + count * kSlotMenuRowH + 16); }
+
+}  // namespace
+
+void uiDrawSlotMenu(const SlotInfo& slot) {
+  SlotMenuItem items[4];
+  const int n = slotMenuItems(!slot.updatePath.empty(), items);
+  const int top = slotMenuTop(n);
+  canvasFillRect(0, top, kScreenW, kScreenH - top, false);
+  canvasDrawLine(0, top, kScreenW - 1, top, true);
+  canvasDrawLine(0, top + 1, kScreenW - 1, top + 1, true);
+  canvasFillRoundRect(kScreenW / 2 - 28, top + 10, 56, 5, 2, true);
+
+  char title[48];
+  snprintf(title, sizeof(title), "%s", slot.title.empty() ? slot.name.c_str() : slot.title.c_str());
+  fitText(title, kScreenW - 2 * kPad, kTitle);
+  canvasDrawString(kPad, top + 26, title, true, kTitle);
+  char sub[64];
+  if (!slot.version.empty()) snprintf(sub, sizeof(sub), "Slot %c  |  version %s", slot.label[0], slot.version.c_str());
+  else snprintf(sub, sizeof(sub), "Slot %c", slot.label[0]);
+  canvasDrawString(kPad, top + 28 + canvasTextHeight(kTitle), sub, true, kSmall);
+
+  for (int i = 0; i < n; ++i) {
+    const int ry = top + kSlotMenuHeadH + i * kSlotMenuRowH;
+    canvasDrawLine(kPad, ry, kScreenW - kPad - 1, ry, true);
+    drawIcon(*items[i].icon, kPad + 16, ry + kSlotMenuRowH / 2);
+    char label[48];
+    if (items[i].kind == UiHit::Kind::SlotUpdate) snprintf(label, sizeof(label), "Update to %s", slot.updateVersion.c_str());
+    else snprintf(label, sizeof(label), "%s", items[i].label);
+    canvasDrawString(kPad + 48, ry + (kSlotMenuRowH - canvasTextHeight(kBody)) / 2, label, true, kBody);
+  }
+  presentNavigation();
+}
+
+UiHit uiHitSlotMenu(int x, int y, bool hasUpdate) {
+  UiHit hit;
+  SlotMenuItem items[4];
+  const int n = slotMenuItems(hasUpdate, items);
+  const int top = slotMenuTop(n);
+  hit.kind = UiHit::Kind::SlotMenuDismiss;
+  if (y < top + kSlotMenuHeadH) return hit;
+  const int row = (y - top - kSlotMenuHeadH) / kSlotMenuRowH;
+  if (row < 0 || row >= n || x < kPad || x >= kScreenW - kPad) return hit;
+  hit.kind = items[row].kind;
+  markHit(hit, kPad, top + kSlotMenuHeadH + row * kSlotMenuRowH + 4, kScreenW - 2 * kPad, kSlotMenuRowH - 8);
+  return hit;
+}
+
+bool uiIsBackSwipe(int x0, int y0, int x1, int y1) {
+  const int dx = x1 - x0;
+  return x0 < 40 && dx > 120 && abs(y1 - y0) * 2 < dx;
+}

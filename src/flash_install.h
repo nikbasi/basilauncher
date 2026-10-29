@@ -20,7 +20,11 @@ enum class FlashResult {
 
 using FlashProgressCb = void (*)(size_t written, size_t total, void* ctx);
 
-FlashResult flashValidateAndWrite(const char* sdPath, int slotIndex, FlashProgressCb cb, void* ctx);
+// allowReplace: overwrite an installed app (an update the user confirmed).
+// The file is still checked before the slot is erased, so a bad file leaves
+// the old app in place.
+FlashResult flashValidateAndWrite(const char* sdPath, int slotIndex, FlashProgressCb cb, void* ctx,
+                                  bool allowReplace = false);
 FlashResult flashEraseSlot(int slotIndex);
 FlashResult bootSlotPendingVerify(int slotIndex);
 const char* flashResultName(FlashResult r);

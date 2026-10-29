@@ -72,9 +72,14 @@ TextEditMode gTextMode = TextEditMode::EditFile;
 bool gOskShift = false;
 bool gOskSymbols = false;
 
-enum class ConfirmAction { None, Delete };
+enum class ConfirmAction { None, Delete, ClearSlot, UpdateSlot };
 ConfirmAction gConfirmAction = ConfirmAction::None;
 std::vector<std::string> gConfirmPaths;
+int gConfirmSlot = -1;
+// Slot the Home long-press sheet (and its Rename) is acting on.
+int gMenuSlot = -1;
+
+constexpr const char* kKeepOnNote = "Keep the device on until this finishes.";
 
 bool gMessageReturnExplorer = false;
 bool gMessageReturnWifi = false;
@@ -93,10 +98,22 @@ void noteActivity() {
 struct ProgressCtx {
   const char* title;
   int lastPct;
+  const char* note;
 };
 
+// Re-read the slots. The /firmware update scan only runs when Home is
+// (re)shown, so carry its results over while the installed app is the same.
 void refreshSlots() {
-  appsAllSlots(gSlots);
+  SlotInfo fresh[kSlotCount];
+  appsAllSlots(fresh);
+  for (int i = 0; i < kSlotCount; ++i) {
+    if (fresh[i].occupied && fresh[i].name == gSlots[i].name) {
+      fresh[i].updatePath = gSlots[i].updatePath;
+      fresh[i].updateVersion = gSlots[i].updateVersion;
+      fresh[i].updateSize = gSlots[i].updateSize;
+    }
+    gSlots[i] = fresh[i];
+  }
   gSpace = appsFlashSpace();
 }
 
@@ -185,7 +202,8 @@ void showHome(bool stable = false) {
   clearExplorerSelection();
   gSheetOpen = false;
   refreshSlots();
-  uiDrawHome(gSlots, gSpace, stable);
+  appsFindUpdates(gSlots);
+  uiDrawHome(gSlots, gSpace, stable, appsLastSlot());
   const BoardClockInfo c = boardClock();
   gLastClockMinute = c.valid ? c.minute : 255;
   gLastHomeScrubMs = millis();
@@ -273,7 +291,7 @@ void progressCb(size_t written, size_t total, void* ctx) {
   const int pct = total ? static_cast<int>((written * 100u) / total) : 0;
   if (pct >= p->lastPct + 5 || pct == 100) {
     p->lastPct = pct;
-    uiDrawProgress(p->title, pct);
+    uiDrawProgress(p->title, pct, p->note);
   }
 }
 
@@ -293,10 +311,10 @@ void installFileToSlot(int fileIndex, int slotIndex) {
   }
 
   gScreen = Screen::Progress;
-  char title[64];
-  snprintf(title, sizeof(title), "%s -> %c", file.name.c_str(), 'A' + slotIndex);
-  ProgressCtx ctx{title, -1};
-  uiDrawProgress(title, 0);
+  char title[96];
+  snprintf(title, sizeof(title), "Installing %s to slot %c", file.name.c_str(), 'A' + slotIndex);
+  ProgressCtx ctx{title, -1, kKeepOnNote};
+  uiDrawProgress(title, 0, kKeepOnNote);
 
   const FlashResult res = flashValidateAndWrite(file.path.c_str(), slotIndex, progressCb, &ctx);
   if (res != FlashResult::Ok) {
@@ -416,6 +434,7 @@ bool nameLooksSafe(const char* name) {
 void redrawWifi();
 void stopWifiSession();
 void showShade();
+void handleBack();
 void startWifiHotspot(bool openDetails);
 
 void applyApPassword(bool save) {
@@ -511,6 +530,21 @@ void loadWeb(const char* url, bool record) {
 void finishTextEdit(bool save) {
   canvasSetHoldCleanRefresh(false);
   canvasRequestCleanRefresh();
+
+  if (gTextMode == TextEditMode::SlotRename) {
+    const int slot = gMenuSlot;
+    gMenuSlot = -1;
+    if (save && slot >= 0 && slot < kSlotCount && gSlots[slot].occupied) {
+      // Trim; an empty name changes nothing.
+      char* name = gTextBuf;
+      while (*name == ' ') ++name;
+      size_t n = strlen(name);
+      while (n > 0 && name[n - 1] == ' ') name[--n] = 0;
+      if (n) appsSaveSlotLabel(slot, name, gSlots[slot].size);
+    }
+    showHome();
+    return;
+  }
 
   if (gTextMode == TextEditMode::ApPassword) {
     applyApPassword(save);
@@ -709,10 +743,22 @@ void askDelete() {
   } else {
     snprintf(body, sizeof(body), "Delete %u selected items?", static_cast<unsigned>(paths.size()));
   }
-  uiDrawConfirm("Delete", body);
+  uiDrawConfirm("Delete", body, "Delete");
 }
 
+void clearSlot(int slotIndex);
+void updateSlot(int slotIndex);
+
 void confirmYes() {
+  if (gConfirmAction == ConfirmAction::ClearSlot || gConfirmAction == ConfirmAction::UpdateSlot) {
+    const ConfirmAction action = gConfirmAction;
+    const int slot = gConfirmSlot;
+    gConfirmAction = ConfirmAction::None;
+    gConfirmSlot = -1;
+    if (action == ConfirmAction::ClearSlot) clearSlot(slot);
+    else updateSlot(slot);
+    return;
+  }
   if (gConfirmAction == ConfirmAction::Delete) {
     for (const auto& path : gConfirmPaths) {
       if (!fileOpsRemove(path.c_str())) {
@@ -742,8 +788,9 @@ void bootExisting(int slotIndex) {
     showExplorer(ExplorerMode::Install, slotIndex);
     return;
   }
+  appsSetLastSlot(slotIndex);
   gScreen = Screen::Progress;
-  uiDrawProgress("Booting...", 100);
+  uiDrawProgress("Starting...", 100);
   delay(200);
   const FlashResult res = bootSlotPendingVerify(slotIndex);
   if (res != FlashResult::Ok) {
@@ -759,7 +806,9 @@ void clearSlot(int slotIndex) {
   if (!gSlots[slotIndex].occupied) return;
 
   gScreen = Screen::Progress;
-  uiDrawProgress("Clearing...", 50);
+  char title[64];
+  snprintf(title, sizeof(title), "Clearing slot %c", 'A' + slotIndex);
+  uiDrawProgress(title, 50, kKeepOnNote);
   const FlashResult res = flashEraseSlot(slotIndex);
   if (res != FlashResult::Ok) {
     char body[96];
@@ -768,7 +817,67 @@ void clearSlot(int slotIndex) {
     return;
   }
   appsClearSlotLabel(slotIndex);
+  if (appsLastSlot() == slotIndex) appsSetLastSlot(-1);
   showHome();
+}
+
+// Write the newer build from /firmware over the installed app. The file is
+// checked before the slot is erased, so a bad file leaves the old app.
+void updateSlot(int slotIndex) {
+  if (slotIndex < 0 || slotIndex >= kSlotCount) return;
+  const std::string path = gSlots[slotIndex].updatePath;
+  const size_t size = gSlots[slotIndex].updateSize;
+  if (path.empty()) {
+    showHome();
+    return;
+  }
+  char base[96];
+  const char* slash = strrchr(path.c_str(), '/');
+  snprintf(base, sizeof(base), "%s", slash ? slash + 1 : path.c_str());
+  gScreen = Screen::Progress;
+  char title[128];
+  snprintf(title, sizeof(title), "Updating slot %c to %s", 'A' + slotIndex, gSlots[slotIndex].updateVersion.c_str());
+  ProgressCtx ctx{title, -1, kKeepOnNote};
+  uiDrawProgress(title, 0, kKeepOnNote);
+  const FlashResult res = flashValidateAndWrite(path.c_str(), slotIndex, progressCb, &ctx, /*allowReplace=*/true);
+  if (res != FlashResult::Ok) {
+    char body[96];
+    snprintf(body, sizeof(body), "Update failed: %s", flashResultName(res));
+    showMessage("Error", body, false);
+    return;
+  }
+  // A name the user typed (no ".bin") survives the update; a file name is
+  // replaced by the new file's.
+  const std::string& label = gSlots[slotIndex].name;
+  const bool fromFile = label.size() > 4 && strcasecmp(label.c_str() + label.size() - 4, ".bin") == 0;
+  appsSaveSlotLabel(slotIndex, fromFile ? base : label.c_str(), size);
+  showHome();
+}
+
+void openSlotMenu(int slotIndex) {
+  if (slotIndex < 0 || slotIndex >= kSlotCount || !gSlots[slotIndex].occupied) return;
+  gMenuSlot = slotIndex;
+  gScreen = Screen::SlotMenu;
+  uiDrawSlotMenu(gSlots[slotIndex]);
+}
+
+void askSlotAction(ConfirmAction action, int slotIndex) {
+  if (slotIndex < 0 || slotIndex >= kSlotCount) return;
+  const SlotInfo& slot = gSlots[slotIndex];
+  gConfirmAction = action;
+  gConfirmSlot = slotIndex;
+  gScreen = Screen::Confirm;
+  char body[160];
+  const char* name = slot.title.empty() ? slot.name.c_str() : slot.title.c_str();
+  if (action == ConfirmAction::ClearSlot) {
+    snprintf(body, sizeof(body), "Erase %s from slot %c? You can install it again from the SD card.", name,
+             slot.label[0]);
+    uiDrawConfirm("Clear slot", body, "Clear slot");
+  } else {
+    snprintf(body, sizeof(body), "Replace %s %s in slot %c with version %s from the SD card?", name,
+             slot.version.c_str(), slot.label[0], slot.updateVersion.c_str());
+    uiDrawConfirm("Update app", body, "Update");
+  }
 }
 
 void redrawWifi() {
@@ -866,6 +975,18 @@ void leaveGps() {
       showHome(true);
       break;
   }
+}
+
+void showSettings() {
+  gScreen = Screen::Settings;
+  refreshSlots();
+  uiDrawSettings(gSpace);
+}
+
+void showSetTime() {
+  gScreen = Screen::SetTime;
+  refreshSlots();
+  uiDrawSetTime(gSpace);
 }
 
 void showShade() {
@@ -1034,7 +1155,7 @@ void handleExplorerHit(const UiHit& hit) {
   const int visible = uiExplorerVisibleRows();
   switch (hit.kind) {
     case UiHit::Kind::Back:
-      if (gMultiSelect) {
+      if (gMultiSelect || !gSelectedEntries.empty()) {
         clearExplorerSelection();
         redrawExplorer(true);
       } else {
@@ -1043,6 +1164,34 @@ void handleExplorerHit(const UiHit& hit) {
       break;
     case UiHit::Kind::GoUp:
       goUpDir();
+      break;
+    case UiHit::Kind::GoPath: {
+      // Keep the first `index` folders of the current path.
+      char target[kFilePathMax] = "/";
+      const char* p = gPath;
+      size_t len = 0;
+      for (int depth = 0; depth < hit.index && *p;) {
+        while (*p == '/') ++p;
+        if (!*p) break;
+        const char* e = strchr(p, '/');
+        const size_t n = e ? static_cast<size_t>(e - p) : strlen(p);
+        if (len + n + 2 >= sizeof(target)) break;
+        target[len++] = '/';
+        memcpy(target + len, p, n);
+        len += n;
+        target[len] = 0;
+        p += n;
+        ++depth;
+      }
+      if (len == 0) snprintf(target, sizeof(target), "/");
+      enterDir(target);
+      break;
+    }
+    case UiHit::Kind::ExplorerSelectMode:
+      clearExplorerSelection();
+      gMultiSelect = true;
+      gSheetOpen = false;
+      redrawExplorer(true);
       break;
     case UiHit::Kind::ScrollUp:
       if (gScroll > 0) {
@@ -1192,17 +1341,77 @@ void handleTextHit(const UiHit& hit) {
   else if (textChanged) redrawTextEditFieldOnly();
 }
 
+void cancelConfirm() {
+  const ConfirmAction action = gConfirmAction;
+  gConfirmAction = ConfirmAction::None;
+  gConfirmPaths.clear();
+  gConfirmSlot = -1;
+  if (action == ConfirmAction::ClearSlot || action == ConfirmAction::UpdateSlot) showHome();
+  else redrawExplorer();
+}
+
+void dismissMessage() {
+  const bool backToWifi = gMessageReturnWifi;
+  const bool backToNet = gMessageReturnNet;
+  gMessageReturnWifi = false;
+  gMessageReturnNet = false;
+  if (backToWifi) redrawWifi();
+  else if (backToNet) redrawNet();
+  else if (gMessageReturnExplorer) redrawExplorer();
+  else showHome();
+}
+
+// One meaning of Back per screen, shared by the header arrows, the edge
+// swipe, and the Files dock's Done.
+void handleBack() {
+  switch (gScreen) {
+    case Screen::Explorer:
+      if (gSheetOpen) {
+        gSheetOpen = false;
+        redrawExplorer();
+      } else if (gMultiSelect || !gSelectedEntries.empty()) {
+        clearExplorerSelection();
+        redrawExplorer(true);
+      } else {
+        showHome();
+      }
+      break;
+    case Screen::Settings:
+      showShade();
+      break;
+    case Screen::SetTime:
+    case Screen::Hardware:
+      showSettings();
+      break;
+    case Screen::Net:
+    case Screen::Wifi:
+      closeShade();
+      break;
+    case Screen::Gps:
+      leaveGps();
+      break;
+    case Screen::SlotMenu:
+      gMenuSlot = -1;
+      showHome();
+      break;
+    case Screen::Confirm:
+      cancelConfirm();
+      break;
+    case Screen::Message:
+      dismissMessage();
+      break;
+    case Screen::TextEdit:
+      finishTextEdit(false);
+      break;
+    default:
+      break;
+  }
+}
+
 void handleTouch(int x, int y) {
   if (gScreen == Screen::Message) {
     uiAcknowledgePress(uiHitMessage(x, y));
-    const bool backToWifi = gMessageReturnWifi;
-    const bool backToNet = gMessageReturnNet;
-    gMessageReturnWifi = false;
-    gMessageReturnNet = false;
-    if (backToWifi) redrawWifi();
-    else if (backToNet) redrawNet();
-    else if (gMessageReturnExplorer) redrawExplorer();
-    else showHome();
+    dismissMessage();
     return;
   }
 
@@ -1212,10 +1421,36 @@ void handleTouch(int x, int y) {
     const UiHit hit = uiHitConfirm(x, y);
     uiAcknowledgePress(hit);
     if (hit.kind == UiHit::Kind::ConfirmYes) confirmYes();
-    else if (hit.kind == UiHit::Kind::ConfirmNo) {
-      gConfirmAction = ConfirmAction::None;
-      gConfirmPaths.clear();
-      redrawExplorer();
+    else if (hit.kind == UiHit::Kind::ConfirmNo) cancelConfirm();
+    return;
+  }
+
+  if (gScreen == Screen::SlotMenu) {
+    if (gMenuSlot < 0 || gMenuSlot >= kSlotCount) {
+      showHome();
+      return;
+    }
+    const bool hasUpdate = !gSlots[gMenuSlot].updatePath.empty();
+    const UiHit hit = uiHitSlotMenu(x, y, hasUpdate);
+    uiAcknowledgePress(hit);
+    const int slot = gMenuSlot;
+    switch (hit.kind) {
+      case UiHit::Kind::BootSlot:
+        bootExisting(slot);
+        break;
+      case UiHit::Kind::SlotUpdate:
+        askSlotAction(ConfirmAction::UpdateSlot, slot);
+        break;
+      case UiHit::Kind::ClearSlot:
+        askSlotAction(ConfirmAction::ClearSlot, slot);
+        break;
+      case UiHit::Kind::SlotRename:
+        openTextEditor(TextEditMode::SlotRename, "Rename app", gSlots[slot].title.c_str(), nullptr);
+        break;
+      default:
+        gMenuSlot = -1;
+        showHome();
+        break;
     }
     return;
   }
@@ -1255,6 +1490,55 @@ void handleTouch(int x, int y) {
 
   if (gScreen == Screen::Settings) {
     const UiHit hit = uiHitSettings(x, y);
+    uiAcknowledgePress(hit);
+    switch (hit.kind) {
+      case UiHit::Kind::Back:
+        handleBack();
+        break;
+      case UiHit::Kind::OpenShade:
+        showShade();
+        break;
+      case UiHit::Kind::Hardware:
+        gScreen = Screen::Hardware;
+        refreshSlots();
+        uiDrawHardware(gSpace);
+        break;
+      case UiHit::Kind::SetTime:
+        showSetTime();
+        break;
+      case UiHit::Kind::PowerOff:
+        enterSleepWithScreensaver();
+        break;
+      case UiHit::Kind::SleepAfterMinus:
+        boardSetSleepAfterMin(boardSleepAfterMin() <= 0 ? 0 : boardSleepAfterMin() - 1);
+        uiDrawSettings(gSpace);
+        break;
+      case UiHit::Kind::SleepAfterPlus:
+        boardSetSleepAfterMin(boardSleepAfterMin() + 1);
+        uiDrawSettings(gSpace);
+        break;
+      case UiHit::Kind::FontSizeMinus:
+      case UiHit::Kind::FontSizePlus:
+        boardSetUiTextSize(boardUiTextSize() + (hit.kind == UiHit::Kind::FontSizePlus ? 1 : -1));
+        canvasRequestCleanRefresh();
+        uiDrawSettings(gSpace);
+        break;
+      case UiHit::Kind::CleanEveryMinus:
+        boardSetCleanEvery(boardCleanEvery() - 1);
+        uiDrawSettings(gSpace);
+        break;
+      case UiHit::Kind::CleanEveryPlus:
+        boardSetCleanEvery(boardCleanEvery() + 1);
+        uiDrawSettings(gSpace);
+        break;
+      default:
+        break;
+    }
+    return;
+  }
+
+  if (gScreen == Screen::SetTime) {
+    const UiHit hit = uiHitSetTime(x, y);
     auto daysInMonth = [](int y, int m) -> int {
       static const int d[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
       if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || (y % 400 == 0))) return 29;
@@ -1303,69 +1587,29 @@ void handleTouch(int x, int y) {
     };
 
     uiAcknowledgePress(hit);
-    if (hit.kind == UiHit::Kind::Back) {
-      showShade();
-    } else if (hit.kind == UiHit::Kind::Hardware) {
-      gScreen = Screen::Hardware;
-      refreshSlots();
-      uiDrawHardware(gSpace);
-    } else if (hit.kind == UiHit::Kind::Wifi) {
-      showWifi();
-    } else if (hit.kind == UiHit::Kind::OpenShade) {
-      showShade();
-    } else if (hit.kind == UiHit::Kind::PowerOff) {
-      enterSleepWithScreensaver();
-    } else if (hit.kind == UiHit::Kind::SleepAfterMinus) {
-      boardSetSleepAfterMin(boardSleepAfterMin() <= 0 ? 0 : boardSleepAfterMin() - 1);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::SleepAfterPlus) {
-      boardSetSleepAfterMin(boardSleepAfterMin() + 1);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::FontSizeMinus) {
-      boardSetUiTextSize(boardUiTextSize() - 1);
-      canvasRequestCleanRefresh();
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::FontSizePlus) {
-      boardSetUiTextSize(boardUiTextSize() + 1);
-      canvasRequestCleanRefresh();
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::CleanEveryMinus) {
-      boardSetCleanEvery(boardCleanEvery() - 1);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::CleanEveryPlus) {
-      boardSetCleanEvery(boardCleanEvery() + 1);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::HourMinus) {
-      adjustTime(-60);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::HourPlus) {
-      adjustTime(60);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::MinuteMinus) {
-      adjustTime(-1);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::MinutePlus) {
-      adjustTime(1);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::YearMinus) {
-      adjustDate(-1, 0, 0);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::YearPlus) {
-      adjustDate(1, 0, 0);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::MonthMinus) {
-      adjustDate(0, -1, 0);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::MonthPlus) {
-      adjustDate(0, 1, 0);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::DayMinus) {
-      adjustDate(0, 0, -1);
-      uiDrawSettings(gSpace);
-    } else if (hit.kind == UiHit::Kind::DayPlus) {
-      adjustDate(0, 0, 1);
-      uiDrawSettings(gSpace);
+    bool changed = true;
+    switch (hit.kind) {
+      case UiHit::Kind::Back:
+        changed = false;
+        handleBack();
+        break;
+      case UiHit::Kind::OpenShade:
+        changed = false;
+        showShade();
+        break;
+      case UiHit::Kind::HourMinus: adjustTime(-60); break;
+      case UiHit::Kind::HourPlus: adjustTime(60); break;
+      case UiHit::Kind::MinuteMinus: adjustTime(-1); break;
+      case UiHit::Kind::MinutePlus: adjustTime(1); break;
+      case UiHit::Kind::YearMinus: adjustDate(-1, 0, 0); break;
+      case UiHit::Kind::YearPlus: adjustDate(1, 0, 0); break;
+      case UiHit::Kind::MonthMinus: adjustDate(0, -1, 0); break;
+      case UiHit::Kind::MonthPlus: adjustDate(0, 1, 0); break;
+      case UiHit::Kind::DayMinus: adjustDate(0, 0, -1); break;
+      case UiHit::Kind::DayPlus: adjustDate(0, 0, 1); break;
+      default: changed = false; break;
     }
+    if (changed) uiDrawSetTime(gSpace);
     return;
   }
 
@@ -1373,11 +1617,7 @@ void handleTouch(int x, int y) {
     const UiHit hit = uiHitHardware(x, y);
     uiAcknowledgePress(hit);
     if (hit.kind == UiHit::Kind::OpenShade) showShade();
-    else if (hit.kind == UiHit::Kind::Back) {
-      gScreen = Screen::Settings;
-      refreshSlots();
-      uiDrawSettings(gSpace);
-    }
+    else if (hit.kind == UiHit::Kind::Back) handleBack();
     return;
   }
 
@@ -1385,7 +1625,7 @@ void handleTouch(int x, int y) {
     const UiHit hit = uiHitNet(x, y);
     uiAcknowledgePress(hit);
     if (hit.kind == UiHit::Kind::Back) {
-      closeShade();
+      handleBack();
     } else if (hit.kind == UiHit::Kind::OpenShade) {
       showShade();
     } else if (hit.kind == UiHit::Kind::NetScan) {
@@ -1445,7 +1685,7 @@ void handleTouch(int x, int y) {
     const UiHit hit = uiHitWifi(x, y, active);
     uiAcknowledgePress(hit);
     if (hit.kind == UiHit::Kind::Back) {
-      closeShade();
+      handleBack();
     } else if (hit.kind == UiHit::Kind::OpenShade) {
       showShade();
     } else if (hit.kind == UiHit::Kind::WifiStartAp) {
@@ -1463,7 +1703,7 @@ void handleTouch(int x, int y) {
     const UiHit hit = uiHitGps(x, y);
     uiAcknowledgePress(hit);
     if (hit.kind == UiHit::Kind::OpenShade) showShade();
-    else if (hit.kind == UiHit::Kind::Back) leaveGps();
+    else if (hit.kind == UiHit::Kind::Back) handleBack();
     else if (hit.kind == UiHit::Kind::GpsZoomIn || hit.kind == UiHit::Kind::GpsZoomOut) {
       if (hit.kind == UiHit::Kind::GpsZoomIn) gpsZoomIn();
       else gpsZoomOut();
@@ -1478,7 +1718,7 @@ void handleTouch(int x, int y) {
     const bool canUp = !appsIsRootDir(gPath);
     const UiHit hit =
         uiHitExplorer(x, y, static_cast<int>(gEntries.size()), gScroll, canUp, gSheetOpen,
-                      fileClipboard().hasItem, static_cast<int>(gSelectedEntries.size()));
+                      fileClipboard().hasItem, static_cast<int>(gSelectedEntries.size()), gMultiSelect);
     if (hit.kind == UiHit::Kind::OpenShade) {
       showShade();
       return;
@@ -1496,6 +1736,16 @@ void handleTouch(int x, int y) {
         break;
       case UiHit::Kind::OpenFiles:
         showExplorer(ExplorerMode::Browse, -1);
+        break;
+      case UiHit::Kind::Settings:
+        showSettings();
+        break;
+      case UiHit::Kind::ResumeLast:
+        bootExisting(hit.index);
+        break;
+      case UiHit::Kind::SlotMenuOpen:
+        refreshSlots();
+        openSlotMenu(hit.index);
         break;
       case UiHit::Kind::WebOpen:
         if (wifiIsStation()) loadWeb(webHomeUrl(), true);
@@ -1613,11 +1863,19 @@ void loop() {
       const bool canUp = !appsIsRootDir(gPath);
       const UiHit held =
           uiHitExplorer(longPressX, longPressY, static_cast<int>(gEntries.size()), gScroll, canUp, false,
-                        fileClipboard().hasItem, static_cast<int>(gSelectedEntries.size()));
+                        fileClipboard().hasItem, static_cast<int>(gSelectedEntries.size()), gMultiSelect);
       if (held.kind == UiHit::Kind::SelectEntry) {
         noteActivity();
         uiAcknowledgePress(held);
         handleExplorerLongPress(held.index);
+      }
+    } else if (gScreen == Screen::Home) {
+      const UiHit held = uiHitHome(longPressX, longPressY);
+      const bool onSlot = held.kind == UiHit::Kind::BootSlot || held.kind == UiHit::Kind::SlotMenuOpen ||
+                          held.kind == UiHit::Kind::ResumeLast;
+      if (onSlot && held.index >= 0 && held.index < kSlotCount && gSlots[held.index].occupied) {
+        noteActivity();
+        openSlotMenu(held.index);
       }
     } else if (gScreen == Screen::Shade) {
       const UiHit held = uiHitShade(longPressX, longPressY);
@@ -1820,6 +2078,14 @@ void loop() {
 
   if (!swipePolled && boardPollSwipe(x0, y0, x1, y1)) {
     noteActivity();
+    // A swipe in from the left edge is Back. The map and the browser keep
+    // their own drags, and the shade closes by pushing it up.
+    const bool edgeBack = gScreen != Screen::Gps && gScreen != Screen::Web && gScreen != Screen::Shade &&
+                          gScreen != Screen::Home && gScreen != Screen::Progress && gScreen != Screen::ImageView;
+    if (edgeBack && uiIsBackSwipe(x0, y0, x1, y1)) {
+      handleBack();
+      return;
+    }
     const int dy = y1 - y0;
     const int dx = x1 - x0;
     const bool fromTop = y0 < 120;

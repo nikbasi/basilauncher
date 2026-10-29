@@ -85,12 +85,16 @@ void canvasFillGrayRect(int x, int y, int w, int h, bool light = true);
 void canvasFillGrayRoundRect(int x, int y, int w, int h, int r, bool light = true);
 void canvasDrawLine(int x0, int y0, int x1, int y1, bool black);
 
-// 8x16 ASC16 glyphs, scaled. scale=1 uses the UI text-size setting (body).
-// scale=2 is the title size (also follows the setting).
-// bold smears body glyphs one pixel right. Leave it off for scale 2.
+// UI text in JetBrains Mono bitmaps (src/ui_font.h). Every size follows the
+// text-size setting: scale 0 is a caption (one step below body), 1 is body,
+// 2 is a title, 3 is the splash. bold picks the bold face for scales 0 and 1.
+// Text only inks its own pixels; the background under it is kept.
 void canvasDrawString(int x, int y, const char* text, bool black = true, int scale = 1, bool bold = false);
 int canvasTextWidth(const char* text, int scale = 1);
 int canvasTextHeight(int scale = 1);
+// Column-major 1-bit bitmap (ui_icons.h layout): (h + 7) / 8 bytes per column,
+// bit 7 of a column's first byte is the top row. Only set bits are inked.
+void canvasDrawColumnBitmap(int x, int y, int w, int h, const uint8_t* bits, bool black = true);
 
 // Copy the current 1-bit frame into PSRAM. The viewer chips are drawn after this,
 // so the copy stays a clean photo. Restore copies it back without freeing it.
@@ -106,6 +110,8 @@ void canvasDiscardGray();
 // UI text size: 0=Small, 1=Medium (default), 2=Large. Affects scale 1 and 2.
 void canvasSetUiTextSize(int level);
 int canvasUiTextSize();
+int canvasCaptionCellW();
+int canvasCaptionCellH();
 int canvasBodyCellW();  // pixel width of one body glyph at current size
 int canvasBodyCellH();
 

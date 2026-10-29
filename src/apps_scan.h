@@ -22,7 +22,16 @@ struct SlotInfo {
   bool occupied = false;
   size_t capacity = 0;  // partition size bytes
   size_t size = 0;      // installed image size (label)
-  std::string name;
+  std::string name;     // file it was installed from, or "Empty"
+  // What to call it: the image's own app description when the build named
+  // itself, otherwise parsed from the file name. version may be empty.
+  std::string title;
+  std::string version;
+  // A newer build of the same app in /firmware that fits this slot
+  // (filled by appsFindUpdates; updatePath empty when there is none).
+  std::string updatePath;
+  std::string updateVersion;
+  size_t updateSize = 0;
 };
 
 struct FlashSpace {
@@ -38,6 +47,13 @@ void appsSaveSlotLabel(int slotIndex, const char* name, size_t size);
 void appsClearSlotLabel(int slotIndex);
 SlotInfo appsSlotInfo(int slotIndex);
 void appsAllSlots(SlotInfo out[kSlotCount]);
+// Look in /firmware for newer builds of the installed apps. Reads a few
+// hundred bytes of each .bin there, so call it when the list is (re)shown,
+// not every frame.
+void appsFindUpdates(SlotInfo slots[kSlotCount]);
+// Slot booted most recently, or -1.
+int appsLastSlot();
+void appsSetLastSlot(int slotIndex);
 FlashSpace appsFlashSpace();
 
 // Smallest empty slot that can hold `bytes`, or -1.

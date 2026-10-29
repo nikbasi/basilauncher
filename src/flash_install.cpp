@@ -122,7 +122,7 @@ const char* flashResultName(FlashResult r) {
   return "unknown";
 }
 
-FlashResult flashValidateAndWrite(const char* sdPath, int slotIndex, FlashProgressCb cb, void* ctx) {
+FlashResult flashValidateAndWrite(const char* sdPath, int slotIndex, FlashProgressCb cb, void* ctx, bool allowReplace) {
   const esp_partition_t* dest = slotPartition(slotIndex);
   if (!dest) return FlashResult::NoPartition;
 
@@ -130,9 +130,9 @@ FlashResult flashValidateAndWrite(const char* sdPath, int slotIndex, FlashProgre
       esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, nullptr);
   if (factory && dest->address == factory->address) return FlashResult::Forbidden;
 
-  // Never overwrite an installed guest app — user must Clear first.
+  // Never overwrite an installed guest app unless this is a confirmed update.
   uint8_t magic = 0;
-  if (esp_partition_read(dest, 0, &magic, 1) == ESP_OK && magic == kEspImageMagic) {
+  if (!allowReplace && esp_partition_read(dest, 0, &magic, 1) == ESP_OK && magic == kEspImageMagic) {
     return FlashResult::Occupied;
   }
 
