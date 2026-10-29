@@ -1,0 +1,2 @@
+#pragma once
+#define FREEINK_ED047TC2_CLEAN_FRAMES_PER_DRIVE 2

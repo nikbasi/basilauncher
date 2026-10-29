@@ -51,10 +51,15 @@ Also searchable as: *LilyGO T5 S3 Pro*, *T5 epaper S3 Pro*, *ESP32-S3 e-ink laun
 ## Features
 
 - **Four guest slots** (`ota_0`…`ota_3`) — best-fit install from `/firmware/*.bin`
+- **Home that knows your apps** — names and versions from each image, a Continue card for the
+  last app you opened, and an update badge when `/firmware` holds a newer build of an installed app.
+  Hold a card (or tap ⋮) to open, update, rename or clear it
 - **Protected factory hub** — on-device UI never overwrites the launcher
 - **RST double-press** custom bootloader — return from any guest without app changes
-- **Files explorer** — browse SD, install bins, view BMPs, edit text, clipboard
+- **Files explorer** — browse SD with tappable breadcrumbs, install bins, view BMPs, edit text, clipboard,
+  multi-select from the dock
 - **Quick settings shade** — frontlight, scrub, jump to Settings
+- **Back everywhere** — the arrow in each screen's header, or swipe in from the left edge
 - **Sleep screensaver** — random BMPs from `/sleep` or `/.sleep`, short BOOT to change, hold BOOT to wake
 - **Clock + battery** — RTC time, charge lightning / USB plug cues
 - **1 MB `spiffs`** — so Meshtastic-style guests can mount InternalFS
@@ -139,6 +144,14 @@ bank's frame counts and the clean-refresh normalize. If either fails after a
 submodule bump, resolve the SDK merge in favour of the listed feature; the list
 lives in `freeink-sdk/docs/launcher-features.md`.
 
+**UI preview without the device.** `tools/ui_preview/run.sh` builds the real `src/ui.cpp`
+and `src/canvas.cpp` on your computer against a fake device and writes every screen (at
+each text size) to PNGs plus contact sheets in `tools/ui_preview/out/`. It also runs a
+tap test that checks each control's hit area matches what is drawn. Needs a C++20
+compiler; Pillow turns the output into PNGs.
+
+UI icons are [Lucide](https://lucide.dev) icons rendered to 1-bit bitmaps at each size
+(`src/ui_icons.h`, regenerate with `scripts/gen_ui_icons.py`; license in `fonts/`).
 UI text uses JetBrains Mono rendered to 1-bit bitmaps at each cell size
 (`src/ui_font.h`, regenerate with `python3 scripts/gen_ui_font.py > src/ui_font.h`;
 font license in `fonts/`).
